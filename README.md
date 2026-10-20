@@ -25,17 +25,36 @@ Needs only Python 3.11+, with no extra packages.
 | `fastmail` | An app password (Settings → Privacy & Security) | 50 MB |
 | `yahoo` | An app password (Account Security → Generate app password) | 25 MB |
 | `smtp` | Host, port (465 SSL or 587 STARTTLS), user, password for any other server | 50 MB |
-| `ses` | Amazon SES: a verified sender, an IAM key allowed `ses:SendRawEmail`, and **production access** (see below) | 40 MB |
+| `ses` | Amazon SES: a verified sender, an IAM access key, and **production access** (see below) | 40 MB |
 | `resend` | A [Resend](https://resend.com) API key and a verified domain | 40 MB |
 
 The size cap is per email. Bigger sends are split across several emails automatically, and a Gutenberg
 book that's too large falls back to its no-images edition.
 
-**Amazon SES note:** new SES accounts start in a *sandbox* that can only email verified addresses,
-and a `@kindle.com` address can't be verified. Request production access in the SES console first.
-`./kindle_send.py check --via ses` tells you if you're still in the sandbox. For credentials, SES
-also reads the standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` env vars and
-`~/.aws/credentials` (respecting `AWS_PROFILE`).
+### Amazon SES setup
+
+1. In the SES console, pick a region and stay in it. Identities and limits are per region.
+2. **Verified identities → Create identity.** Verify a domain you own (best deliverability) or a
+   single email address (click the link AWS sends).
+3. **Request production access** (Account dashboard). New accounts start in a *sandbox* that can
+   only email verified addresses, and a `@kindle.com` address can't be verified. For the use case,
+   describe it as personal, low-volume mail to your own Kindle. Review usually takes about a day.
+4. **Create an IAM user** with this policy, then create an access key for it:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": ["ses:SendEmail", "ses:SendRawEmail", "ses:GetAccount"],
+       "Resource": "*"
+     }]
+   }
+   ```
+5. Run `./kindle_send.py init --via ses`, then `./kindle_send.py check --via ses`. `check` reports
+   whether the account is still in the sandbox.
+
+Instead of storing keys in the config, SES also reads the standard `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` / `AWS_REGION` env vars and `~/.aws/credentials` (respecting `AWS_PROFILE`).
 
 ### Example config
 

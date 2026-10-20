@@ -391,7 +391,8 @@ def cmd_init(args) -> None:
         t["from"] = from_addr if from_addr and from_addr != t["user"] else None
         sender = t.get("from") or t["user"]
     elif provider == "ses":
-        print("Needs an IAM user/key allowed to call ses:SendRawEmail, and a verified sender address or domain.")
+        print("Needs a verified sender, SES production access, and an IAM key allowed ses:SendEmail,\n"
+              "ses:SendRawEmail and ses:GetAccount (see README → Amazon SES setup).")
         print("Leave the keys blank to use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY or ~/.aws/credentials.")
         t["from"] = sender = _ask("Verified sender address", t.get("from"))
         t["region"] = _ask("SES region", t.get("region", "us-east-1"))
