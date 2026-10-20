@@ -1,0 +1,5 @@
+# One item per line: Gutenberg ID, URL, local file, or search text (top hit is used with -y)
+1342
+https://www.gutenberg.org/ebooks/2701
+the count of monte cristo
+https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/mary-shelley_frankenstein.epub?source=download
