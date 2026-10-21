@@ -14,6 +14,13 @@ import Testing
                 == matchKey(title: "Frankenstein", primaryAuthor: "Mary Shelley"))
     }
 
+    @Test func cutsSubtitleAtEmbeddedNewline() {
+        let key = matchKey(title: "In the South Seas", primaryAuthor: "Robert Louis Stevenson")
+        #expect(matchKey(title: "In the South Seas\r\nBeing an Account", primaryAuthor: "Robert Louis Stevenson") == key)
+        #expect(matchKey(title: "In the South Seas\nBeing an Account", primaryAuthor: "Robert Louis Stevenson") == key)
+        #expect(matchKey(title: "In the South Seas\rBeing an Account", primaryAuthor: "Robert Louis Stevenson") == key)
+    }
+
     @Test func differentAuthorsDiffer() {
         #expect(
             matchKey(title: "Emma", primaryAuthor: "Jane Austen")

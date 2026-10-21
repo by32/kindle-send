@@ -38,10 +38,14 @@ import Testing
         #expect(works.count == 3)
     }
 
-    @Test func embeddedNewlineInTitleDoesNotSplitGroup() {
-        let a = edition("pg:1", .gutenberg, "Pride and\r\nPrejudice", "Jane Austen", downloads: 1)
-        let b = edition("pg:2", .gutenberg, "Pride and Prejudice", "Jane Austen", downloads: 2)
-        #expect(WorkGrouper.group([a, b]).count == 1)
+    @Test func gutenbergNewlineSubtitleGroupsWithSE() {
+        let pg = edition(
+            "pg:464", .gutenberg, "In the South Seas\r\nBeing an Account of Experiences and Observations",
+            "Robert Louis Stevenson", downloads: 300)
+        let se = edition("se:/ebooks/robert-louis-stevenson/in-the-south-seas", .standardEbooks, "In the South Seas", "Robert Louis Stevenson")
+        let works = WorkGrouper.group([pg, se])
+        #expect(works.count == 1)
+        #expect(works[0].defaultEdition.source == .standardEbooks)
     }
 
     @Test func missingAuthorStillGroups() {

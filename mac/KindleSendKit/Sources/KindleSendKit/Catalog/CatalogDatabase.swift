@@ -117,7 +117,7 @@ public final class CatalogDatabase: @unchecked Sendable {
 
     /// The layout `build` writes. Bump it whenever the schema or indexed content changes, so
     /// `CatalogUpdater.isStale(builtAt:schemaVersion:)` rebuilds indexes from older builds.
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
 
     public var builtAt: Date? {
         meta("built_at").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))

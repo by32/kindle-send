@@ -36,11 +36,14 @@ public func displayAuthor(fromGutenberg raw: String) -> String {
     return parts[1] + " " + family
 }
 
-/// Cuts a title at the first `;`, `:` or ` or,` subtitle marker.
+/// Cuts a title at the first `;`, `:`, ` or,` or line-break subtitle marker. Gutenberg often
+/// puts the subtitle after an embedded newline ("In the South Seas\r\nBeing an Account…").
 private func cutSubtitle(_ title: String) -> String {
     let markers = [";", ":", " or,"]
-    let cut = markers
-        .compactMap { title.range(of: $0, options: .caseInsensitive)?.lowerBound }
-        .min()
-    return cut.map { String(title[..<$0]) } ?? title
+    // "\r\n" is a single Character, so line breaks are matched by Character, not substring.
+    var cuts = markers.compactMap { title.range(of: $0, options: .caseInsensitive)?.lowerBound }
+    if let lineBreak = title.firstIndex(where: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }) {
+        cuts.append(lineBreak)
+    }
+    return cuts.min().map { String(title[..<$0]) } ?? title
 }
