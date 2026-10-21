@@ -38,7 +38,7 @@ private final class FakeMailer: MailSending {
         let (a, b, c, d) = (Self.edition(1, "A"), Self.edition(2, "B"), Self.edition(3, "C"), Self.edition(4, "D"))
         let http = FakeHTTPClient { url in
             if url.absoluteString.contains("/ebooks/2.") { throw HTTPError.status(404, url) }
-            return Data(count: Self.mb)
+            return epubData(Self.mb)
         }
         let mailer = FakeMailer(failingCalls: [2])
         let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
@@ -93,7 +93,7 @@ private final class FakeMailer: MailSending {
     }
 
     @Test func stoppingEarlyCancelsRemainingBatches() async {
-        let http = FakeHTTPClient { _ in Data(count: Self.mb) }
+        let http = FakeHTTPClient { _ in epubData(Self.mb) }
         let mailer = FakeMailer()
         let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
                           from: "me@x.com", to: "k@kindle.com", maxBytes: 2_500_000)
@@ -106,13 +106,13 @@ private final class FakeMailer: MailSending {
     }
 
     @Test func oversizeBookFailsClearly() async {
-        let http = FakeHTTPClient { _ in Data(count: 30 * Self.mb) }
+        let http = FakeHTTPClient { _ in epubData(30 * Self.mb) }
         let mailer = FakeMailer()
         let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
                           from: "me@x.com", to: "k@kindle.com", maxBytes: 20 * Self.mb)
         let events = await Self.collect(job.run([Self.edition(1, "Huge")]))
 
-        #expect(events.contains(.failed(id: "pg:1", message: "Too large to email (30.0 MB > 20 MB cap)")))
+        #expect(events.contains(.failed(id: "pg:1", message: "Too large to email (41.1 MB > 20 MB cap)")))
         #expect(events.last == .finished(sent: 0, failed: 1))
         #expect(mailer.callCount == 0)
     }
@@ -120,7 +120,7 @@ private final class FakeMailer: MailSending {
     @Test func sameFilenameEditionsStayDistinct() async {
         // Two editions with identical title/author produce the same filename; ids must still map correctly.
         let (a, b) = (Self.edition(1, "Same"), Self.edition(2, "Same"))
-        let http = FakeHTTPClient { _ in Data(count: 1000) }
+        let http = FakeHTTPClient { _ in epubData(1000) }
         let mailer = FakeMailer()
         let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
                           from: "me@x.com", to: "k@kindle.com", maxBytes: 20 * Self.mb)

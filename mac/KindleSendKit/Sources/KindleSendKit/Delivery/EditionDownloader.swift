@@ -1,8 +1,12 @@
 import Foundation
 
 public enum DownloadError: Error, Equatable, LocalizedError {
+    /// `bytes` is the estimated size of the whole message (see `Batching.singleMessageSize`),
+    /// the figure compared against `cap`.
     case tooLarge(bytes: Int, cap: Int)
     case http(Int)
+    /// The response was not a ZIP archive, e.g. an HTML interstitial or rate-limit page.
+    case notAnEpub
 
     public var errorDescription: String? {
         switch self {
@@ -10,6 +14,8 @@ public enum DownloadError: Error, Equatable, LocalizedError {
             "Too large to email (\(Self.megabytes(bytes, decimals: true)) MB > \(Self.megabytes(cap, decimals: false)) MB cap)"
         case let .http(code):
             "Download failed (HTTP \(code))"
+        case .notAnEpub:
+            "Download wasn't an EPUB (the site may be rate-limiting; try again later)"
         }
     }
 
@@ -26,15 +32,21 @@ public struct EditionDownloader: Sendable {
         self.http = http
     }
 
+    /// An EPUB is a ZIP archive, which starts with a local file header: "PK\u{3}\u{4}".
+    private static let zipMagic: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
+
     /// Downloads the edition's EPUB. For Gutenberg, falls back to the no-images build when the
     /// full one exceeds the cap (measured on the whole message: base64 size plus MIME overhead).
+    /// Throws `notAnEpub` when the response isn't a ZIP archive (e.g. an HTML error page).
     public func download(_ edition: Edition, maxBytes: Int) async throws -> Attachment {
         var data = try await fetch(Self.primaryURL(for: edition))
         if Batching.singleMessageSize(data.count) > maxBytes, let fallback = Self.noImagesURL(for: edition) {
             data = try await fetch(fallback)
         }
-        if Batching.singleMessageSize(data.count) > maxBytes {
-            throw DownloadError.tooLarge(bytes: data.count, cap: maxBytes)
+        guard data.starts(with: Self.zipMagic) else { throw DownloadError.notAnEpub }
+        let messageSize = Batching.singleMessageSize(data.count)
+        if messageSize > maxBytes {
+            throw DownloadError.tooLarge(bytes: messageSize, cap: maxBytes)
         }
         return Attachment(filename: Self.filename(for: edition), data: data, mimeType: "application/epub+zip")
     }

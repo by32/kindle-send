@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import KindleSendKit
 
+/// `count` bytes starting with the ZIP local-file-header magic, like a real EPUB.
+func epubData(_ count: Int) -> Data {
+    var data = Data(count: count)
+    data.replaceSubrange(0..<4, with: [0x50, 0x4B, 0x03, 0x04])
+    return data
+}
+
 @Suite struct EditionDownloaderTests {
     private static let mb = 1_048_576
     private static let cover = URL(string: "https://example.com/c.jpg")!
@@ -15,7 +22,7 @@ import Testing
 
     @Test func noImagesFallback() async throws {
         let http = FakeHTTPClient { url in
-            url == Self.withImages ? Data(count: 30 * Self.mb) : Data(count: Self.mb)
+            url == Self.withImages ? epubData(30 * Self.mb) : epubData(Self.mb)
         }
         let attachment = try await EditionDownloader(http: http).download(Self.pride, maxBytes: 20 * Self.mb)
 
@@ -26,25 +33,26 @@ import Testing
     }
 
     @Test func smallEnoughSkipsFallback() async throws {
-        let http = FakeHTTPClient { _ in Data(count: Self.mb) }
+        let http = FakeHTTPClient { _ in epubData(Self.mb) }
         _ = try await EditionDownloader(http: http).download(Self.pride, maxBytes: 20 * Self.mb)
         #expect(await http.requests == [Self.withImages])
     }
 
     @Test func oversizeEvenWithoutImages() async {
-        let http = FakeHTTPClient { _ in Data(count: 30 * Self.mb) }
+        let http = FakeHTTPClient { _ in epubData(30 * Self.mb) }
         let error = await #expect(throws: DownloadError.self) {
             try await EditionDownloader(http: http).download(Self.pride, maxBytes: 20 * Self.mb)
         }
-        #expect(error == .tooLarge(bytes: 30 * Self.mb, cap: 20 * Self.mb))
-        #expect(error?.errorDescription == "Too large to email (30.0 MB > 20 MB cap)")
+        // The reported size is the encoded message size that is compared against the cap.
+        #expect(error == .tooLarge(bytes: Batching.singleMessageSize(30 * Self.mb), cap: 20 * Self.mb))
+        #expect(error?.errorDescription == "Too large to email (41.1 MB > 20 MB cap)")
     }
 
     @Test func seUsesEpubURL() async throws {
         let edition = Edition(
             id: "se:/ebooks/mary-shelley/frankenstein", source: .standardEbooks, title: "Frankenstein",
             authors: ["Mary Shelley"], languages: ["en"], subjects: [], coverURL: Self.cover)
-        let http = FakeHTTPClient { _ in Data(count: Self.mb) }
+        let http = FakeHTTPClient { _ in epubData(Self.mb) }
         let attachment = try await EditionDownloader(http: http).download(edition, maxBytes: 20 * Self.mb)
 
         #expect(await http.requests == [StandardEbooksParser.epubURL(for: edition)])
@@ -55,11 +63,27 @@ import Testing
         let edition = Edition(
             id: "se:/ebooks/mary-shelley/frankenstein", source: .standardEbooks, title: "Frankenstein",
             authors: ["Mary Shelley"], languages: ["en"], subjects: [], coverURL: Self.cover)
-        let http = FakeHTTPClient { _ in Data(count: 30 * Self.mb) }
-        await #expect(throws: DownloadError.tooLarge(bytes: 30 * Self.mb, cap: 20 * Self.mb)) {
+        let http = FakeHTTPClient { _ in epubData(30 * Self.mb) }
+        await #expect(throws: DownloadError.tooLarge(bytes: Batching.singleMessageSize(30 * Self.mb), cap: 20 * Self.mb)) {
             try await EditionDownloader(http: http).download(edition, maxBytes: 20 * Self.mb)
         }
         #expect(await http.requests.count == 1)
+    }
+
+    @Test func htmlInsteadOfEpubIsRejected() async {
+        let http = FakeHTTPClient { _ in Data("<!DOCTYPE html><html><body>Too many requests</body></html>".utf8) }
+        let error = await #expect(throws: DownloadError.self) {
+            try await EditionDownloader(http: http).download(Self.pride, maxBytes: 20 * Self.mb)
+        }
+        #expect(error == .notAnEpub)
+        #expect(error?.errorDescription == "Download wasn't an EPUB (the site may be rate-limiting; try again later)")
+    }
+
+    @Test func emptyDownloadIsRejected() async {
+        let http = FakeHTTPClient { _ in Data() }
+        await #expect(throws: DownloadError.notAnEpub) {
+            try await EditionDownloader(http: http).download(Self.pride, maxBytes: 20 * Self.mb)
+        }
     }
 
     @Test func httpStatusMapsToDownloadError() async {
@@ -101,7 +125,7 @@ import Testing
         let cap = 1_048_576
         let size = 765_000 // encoded ~1,046,800 bytes
         #expect(Batching.encodedSize(size) <= cap)
-        let http = FakeHTTPClient { _ in Data(count: size) }
+        let http = FakeHTTPClient { _ in epubData(size) }
         await #expect(throws: DownloadError.self) {
             try await EditionDownloader(http: http).download(Self.pride, maxBytes: cap)
         }
