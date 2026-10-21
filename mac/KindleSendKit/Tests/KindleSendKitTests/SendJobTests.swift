@@ -11,16 +11,11 @@ private struct MailerError: Error, LocalizedError {
 private final class FakeMailer: MailSending {
     private let calls = Mutex<[Data]>([])
     let failingCalls: Set<Int>
-    let delay: Duration
-    init(failingCalls: Set<Int> = [], delay: Duration = .zero) {
-        self.failingCalls = failingCalls
-        self.delay = delay
-    }
+    init(failingCalls: Set<Int> = []) { self.failingCalls = failingCalls }
     var callCount: Int { calls.withLock { $0.count } }
 
     func send(from: String, to: String, message: Data) async throws {
         let n = calls.withLock { $0.append(message); return $0.count }
-        if delay > .zero { try await Task.sleep(for: delay) }
         if failingCalls.contains(n) { throw MailerError() }
     }
 }
@@ -97,19 +92,17 @@ private final class FakeMailer: MailSending {
         #expect(mailer.callCount == 0)
     }
 
-    @Test func stoppingEarlyCancelsRemainingBatches() async throws {
+    @Test func stoppingEarlyCancelsRemainingBatches() async {
         let http = FakeHTTPClient { _ in Data(count: Self.mb) }
-        let mailer = FakeMailer(delay: .milliseconds(150))
+        let mailer = FakeMailer()
         let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
                           from: "me@x.com", to: "k@kindle.com", maxBytes: 2_500_000)
         let editions = (1...4).map { Self.edition($0, "B\($0)") }
         for await event in job.run(editions) {
             if case .sent = event { break }
         }
-        let afterBreak = mailer.callCount
-        try await Task.sleep(for: .milliseconds(600))
-        #expect(afterBreak == 1)
-        #expect(mailer.callCount == afterBreak)
+        // Pull-based: nothing runs after the consumer stops, so this holds with no waiting.
+        #expect(mailer.callCount == 1)
     }
 
     @Test func oversizeBookFailsClearly() async {

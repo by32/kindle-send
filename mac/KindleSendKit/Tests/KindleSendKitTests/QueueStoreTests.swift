@@ -96,9 +96,17 @@ import Testing
         #expect(history.wasSent(id: "pg:1"))
     }
 
-    @Test func saveErrorClearsAfterSuccess() {
-        let queue = QueueStore(fileURL: Self.tempFile())
+    @Test func saveErrorClearsAfterSuccess() throws {
+        let url = try Self.unwritableFile()
+        let blocker = url.deletingLastPathComponent()
+        let queue = QueueStore(fileURL: url)
         queue.add(Self.edition("pg:1"))
+        #expect(queue.lastSaveError != nil)
+
+        // Repair the location: replace the blocking file with a directory.
+        try FileManager.default.removeItem(at: blocker)
+        queue.add(Self.edition("pg:2"))
         #expect(queue.lastSaveError == nil)
+        #expect(QueueStore(fileURL: url).items.map(\.id) == ["pg:1", "pg:2"])
     }
 }

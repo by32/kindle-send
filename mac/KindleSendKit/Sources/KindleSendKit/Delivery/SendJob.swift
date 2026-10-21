@@ -17,11 +17,11 @@ extension SMTPClient: MailSending {}
 /// Downloads, batches and emails editions. A failure in one book or batch never stops the rest,
 /// and each id is reported as sent or failed exactly once.
 public struct SendJob: Sendable {
-    private let downloader: EditionDownloader
-    private let mailer: MailSending
-    private let from: String
-    private let to: String
-    private let maxBytes: Int
+    let downloader: EditionDownloader
+    let mailer: MailSending
+    let from: String
+    let to: String
+    let maxBytes: Int
 
     public init(downloader: EditionDownloader, mailer: MailSending, from: String, to: String, maxBytes: Int) {
         self.downloader = downloader
@@ -31,60 +31,101 @@ public struct SendJob: Sendable {
         self.maxBytes = maxBytes
     }
 
+    /// Pull-based: each `next()` on the stream advances the job by exactly one step, so once the
+    /// consumer stops iterating nothing further is downloaded, built or sent.
     public func run(_ editions: [Edition]) -> AsyncStream<SendEvent> {
-        AsyncStream { continuation in
-            let task = Task {
-                await execute(editions, emit: {
-                    if case .terminated = continuation.yield($0) { return false }
-                    return true
-                })
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        let run = Run(job: self, editions: editions)
+        return AsyncStream(unfolding: { await run.next() })
     }
 
-    private func execute(_ editions: [Edition], emit: (SendEvent) -> Bool) async {
+    /// The job's state machine. An actor so the unfolding closure can capture it safely.
+    private actor Run {
+        enum Phase {
+            case download(Int)
+            case finishDownload(Int)
+            case sendBatch(Int)
+            case finishSend(Int)
+            case done
+        }
+
+        let job: SendJob
+        let editions: [Edition]
+        var phase = Phase.download(0)
+        var pending: [SendEvent] = []
+        var downloaded: [(edition: Edition, attachment: Attachment)] = []
+        // Batches as ranges into `downloaded`, so ids map back by position, never by filename.
+        var batchRanges: [Range<Int>] = []
         var sentCount = 0
         var failedCount = 0
 
-        // Kept in lockstep so batches map back to editions by position, never by filename.
-        var downloaded: [(edition: Edition, attachment: Attachment)] = []
-        for edition in editions {
-            if Task.isCancelled { return }
-            guard emit(.downloading(id: edition.id)) else { return }
-            do {
-                downloaded.append((edition, try await downloader.download(edition, maxBytes: maxBytes)))
-            } catch {
-                failedCount += 1
-                guard emit(.failed(id: edition.id, message: Self.message(for: error))) else { return }
-            }
+        init(job: SendJob, editions: [Edition]) {
+            self.job = job
+            self.editions = editions
         }
 
-        let batches = Batching.batches(downloaded.map(\.attachment), maxBytes: maxBytes)
-        var offset = 0
-        for (index, batch) in batches.enumerated() {
-            if Task.isCancelled { return }
-            let members = downloaded[offset..<offset + batch.count]
-            offset += batch.count
-            let ids = members.map(\.edition.id)
-            guard emit(.sending(ids: ids, batch: index + 1, of: batches.count)) else { return }
-            let subject = batch.count == 1 ? members.first!.edition.title : "\(batch.count) books"
-            let message = MIMEMessage.build(from: from, to: to, subject: subject, attachments: batch)
-            do {
-                try await mailer.send(from: from, to: to, message: message)
-                sentCount += ids.count
-                guard emit(.sent(ids: ids)) else { return }
-                // Let a consumer that has stopped listening cancel us before the next batch is sent.
-                await Task.yield()
-            } catch {
-                for id in ids {
-                    failedCount += 1
-                    guard emit(.failed(id: id, message: Self.message(for: error))) else { return }
+        func next() async -> SendEvent? {
+            while pending.isEmpty {
+                if Task.isCancelled { phase = .done }
+                if case .done = phase { return nil }
+                await step()
+            }
+            return pending.removeFirst()
+        }
+
+        private func step() async {
+            switch phase {
+            case let .download(i):
+                guard i < editions.count else {
+                    let batches = Batching.batches(downloaded.map(\.attachment), maxBytes: job.maxBytes)
+                    var offset = 0
+                    for batch in batches {
+                        batchRanges.append(offset..<offset + batch.count)
+                        offset += batch.count
+                    }
+                    phase = .sendBatch(0)
+                    return
                 }
+                pending.append(.downloading(id: editions[i].id))
+                phase = .finishDownload(i)
+            case let .finishDownload(i):
+                let edition = editions[i]
+                do {
+                    downloaded.append((edition, try await job.downloader.download(edition, maxBytes: job.maxBytes)))
+                } catch {
+                    failedCount += 1
+                    pending.append(.failed(id: edition.id, message: SendJob.message(for: error)))
+                }
+                phase = .download(i + 1)
+            case let .sendBatch(k):
+                guard k < batchRanges.count else {
+                    pending.append(.finished(sent: sentCount, failed: failedCount))
+                    phase = .done
+                    return
+                }
+                let ids = downloaded[batchRanges[k]].map(\.edition.id)
+                pending.append(.sending(ids: ids, batch: k + 1, of: batchRanges.count))
+                phase = .finishSend(k)
+            case let .finishSend(k):
+                let members = downloaded[batchRanges[k]]
+                let ids = members.map(\.edition.id)
+                let subject = members.count == 1 ? members.first!.edition.title : "\(members.count) books"
+                let message = MIMEMessage.build(
+                    from: job.from, to: job.to, subject: subject, attachments: members.map(\.attachment))
+                do {
+                    try await job.mailer.send(from: job.from, to: job.to, message: message)
+                    sentCount += ids.count
+                    pending.append(.sent(ids: ids))
+                } catch {
+                    for id in ids {
+                        failedCount += 1
+                        pending.append(.failed(id: id, message: SendJob.message(for: error)))
+                    }
+                }
+                phase = .sendBatch(k + 1)
+            case .done:
+                break
             }
         }
-        _ = emit(.finished(sent: sentCount, failed: failedCount))
     }
 
     private static func message(for error: Error) -> String {
