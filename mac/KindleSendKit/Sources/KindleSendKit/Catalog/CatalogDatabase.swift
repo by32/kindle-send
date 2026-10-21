@@ -36,6 +36,14 @@ public final class CatalogDatabase: @unchecked Sendable {
     private static let typoMinSimilarity = 0.3
     /// Folded queries this short use the title-prefix path instead of FTS.
     private static let shortQueryMaxLength = 2
+    /// Browse order is `popularity * seBoost + 1` for works with a Standard Ebooks edition and
+    /// `popularity` otherwise: SE works outrank equally popular Gutenberg ones and surface ahead
+    /// of the unranked long tail, but a top Gutenberg book still outranks an unranked SE work.
+    private static let seBoost = 1.5
+
+    private static func browseRank(popularity: Int64, hasSE: Bool) -> Double {
+        hasSE ? Double(popularity) * seBoost + 1 : Double(popularity)
+    }
 
     /// Opens an existing index file read-only. It never creates the file or any sidecar
     /// (`-journal`, `-wal`, `-shm`). nil = an empty, writable in-memory index.
@@ -155,10 +163,10 @@ public final class CatalogDatabase: @unchecked Sendable {
     private static let schema = """
         CREATE TABLE IF NOT EXISTS works(
             id TEXT PRIMARY KEY, json BLOB, popularity INTEGER, has_se INTEGER,
-            languages TEXT, categories TEXT, title_prefix1 TEXT, title_prefix2 TEXT);
-        CREATE INDEX IF NOT EXISTS works_browse ON works(has_se DESC, popularity DESC);
-        CREATE INDEX IF NOT EXISTS works_prefix1 ON works(title_prefix1, has_se DESC, popularity DESC);
-        CREATE INDEX IF NOT EXISTS works_prefix2 ON works(title_prefix2, has_se DESC, popularity DESC);
+            languages TEXT, categories TEXT, title_prefix1 TEXT, title_prefix2 TEXT, browse_rank REAL);
+        CREATE INDEX IF NOT EXISTS works_browse ON works(browse_rank DESC);
+        CREATE INDEX IF NOT EXISTS works_prefix1 ON works(title_prefix1, browse_rank DESC);
+        CREATE INDEX IF NOT EXISTS works_prefix2 ON works(title_prefix2, browse_rank DESC);
         CREATE VIRTUAL TABLE IF NOT EXISTS works_fts USING fts5(
             title, authors, subjects, content='', tokenize='unicode61 remove_diacritics 2');
         CREATE VIRTUAL TABLE IF NOT EXISTS works_tri USING fts5(title_authors, tokenize='trigram');
@@ -171,8 +179,9 @@ public final class CatalogDatabase: @unchecked Sendable {
             let encoder = JSONEncoder()
             let insertWork = try Statement(handle(), """
                 INSERT INTO works(
-                    rowid, id, json, popularity, has_se, languages, categories, title_prefix1, title_prefix2)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    rowid, id, json, popularity, has_se, languages, categories, title_prefix1, title_prefix2,
+                    browse_rank)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 """)
             let insertFTS = try Statement(handle(), "INSERT INTO works_fts(rowid, title, authors, subjects) VALUES (?1, ?2, ?3, ?4)")
             let insertTri = try Statement(handle(), "INSERT INTO works_tri(rowid, title_authors) VALUES (?1, ?2)")
@@ -190,13 +199,16 @@ public final class CatalogDatabase: @unchecked Sendable {
                 try insertWork.bind(1, rowid)
                 try insertWork.bind(2, work.id)
                 try insertWork.bind(3, try encoder.encode(editions))
-                try insertWork.bind(4, Int64(editions.map(\.downloads).max() ?? 0))
-                try insertWork.bind(5, editions.contains { $0.source == .standardEbooks } ? 1 : 0)
+                let popularity = Int64(editions.map(\.downloads).max() ?? 0)
+                let hasSE = editions.contains { $0.source == .standardEbooks }
+                try insertWork.bind(4, popularity)
+                try insertWork.bind(5, Int64(hasSE ? 1 : 0))
                 try insertWork.bind(6, Self.pipeList(languages))
                 try insertWork.bind(7, Self.pipeList(categories))
                 let title = foldForSearch(work.defaultEdition.title)
                 try insertWork.bind(8, String(title.prefix(1)))
                 try insertWork.bind(9, String(title.prefix(2)))
+                try insertWork.bind(10, Self.browseRank(popularity: popularity, hasSE: hasSE))
                 try insertWork.run()
 
                 try insertFTS.reset()
@@ -252,7 +264,7 @@ public final class CatalogDatabase: @unchecked Sendable {
             let stmt = try Statement(handle(), """
                 SELECT id, json FROM works
                 WHERE (?1 IS NULL OR languages LIKE ?1) AND (?2 IS NULL OR categories LIKE ?2)
-                ORDER BY has_se DESC, popularity DESC LIMIT ?3
+                ORDER BY browse_rank DESC LIMIT ?3
                 """)
             try bindFilters(stmt, language, category)
             try stmt.bind(3, Int64(limit))
@@ -261,14 +273,14 @@ public final class CatalogDatabase: @unchecked Sendable {
 
         if folded.count <= Self.shortQueryMaxLength {
             // bm25 over a 1-2 character prefix would score most of the catalog. Instead match
-            // the default title's first characters; the (prefix, has_se, popularity) index
+            // the default title's first characters; the (prefix, browse_rank) index
             // yields rows already in order, so only `limit` rows are read.
             let column = folded.count == 1 ? "title_prefix1" : "title_prefix2"
             let stmt = try Statement(handle(), """
                 SELECT id, json FROM works
                 WHERE \(column) = ?3
                   AND (?1 IS NULL OR languages LIKE ?1) AND (?2 IS NULL OR categories LIKE ?2)
-                ORDER BY has_se DESC, popularity DESC LIMIT ?4
+                ORDER BY browse_rank DESC LIMIT ?4
                 """)
             try bindFilters(stmt, language, category)
             try stmt.bind(3, folded)
@@ -400,6 +412,10 @@ private final class Statement {
 
     func bind(_ index: Int32, _ value: Int64) throws {
         try check(sqlite3_bind_int64(stmt, index, value))
+    }
+
+    func bind(_ index: Int32, _ value: Double) throws {
+        try check(sqlite3_bind_double(stmt, index, value))
     }
 
     func bind(_ index: Int32, _ value: Data) throws {

@@ -84,6 +84,21 @@ import Testing
         #expect(results.map(\.id) == ["lost world|bob jones", "lost world|ann smith"])
     }
 
+    @Test func popularBrowseBoostsSEWithoutPartitioning() throws {
+        let ids = try database().search(SearchQuery(text: "", category: .popular, language: nil)).map(\.id)
+        let pride = try #require(ids.firstIndex(of: "pride and prejudice|jane austen"))
+        let seZero = try #require(ids.firstIndex(of: "lost world|bob jones"))
+        let pgZero = try #require(ids.firstIndex(of: "lost world|ann smith"))
+        #expect(pride < seZero)
+        #expect(seZero < pgZero)
+        #expect(ids.first == "pride and prejudice|jane austen")
+    }
+
+    @Test func shortQueriesUseTheSameBoostedOrder() throws {
+        #expect(try database().search(SearchQuery(text: "t")).map(\.id)
+            == ["raven|edgar poe", "lost world|bob jones", "lost world|ann smith"])
+    }
+
     @Test func hostileQueriesDoNotThrow() throws {
         let db = try database()
         for text in ["", "   ", "\"\"\"", "AND", "NEAR(", "*", "-", "a", "a-"] {
@@ -177,6 +192,13 @@ import Testing
             "the adventures of sherlok holmes", "t",
         ]
         var times: [Duration] = []
+        for category in BookCategory.allCases {
+            let start = ContinuousClock.now
+            _ = try db.search(SearchQuery(text: "", category: category, language: "en"))
+            let elapsed = ContinuousClock.now - start
+            times.append(elapsed)
+            print("bench browse \(category.rawValue): \(elapsed)")
+        }
         for text in queries {
             let start = ContinuousClock.now
             _ = try db.search(SearchQuery(text: text, category: .popular, language: nil))
@@ -187,7 +209,7 @@ import Testing
         let sorted = times.sorted()
         let median = sorted[sorted.count / 2]
         let p95 = sorted[Int((Double(sorted.count) * 0.95).rounded(.up)) - 1]
-        print("bench: \(works.count) works, \(queries.count) queries, build \(buildTime), median \(median), p95 \(p95), max \(sorted.last!)")
+        print("bench: \(works.count) works, \(times.count) queries, build \(buildTime), median \(median), p95 \(p95), max \(sorted.last!)")
         #expect(median < .milliseconds(50))
         #expect(p95 < .milliseconds(50))
     }
