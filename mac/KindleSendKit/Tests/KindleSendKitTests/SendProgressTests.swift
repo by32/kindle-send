@@ -16,6 +16,12 @@ import Testing
         return (queue, SendHistory(fileURL: dir.appendingPathComponent("history.json")))
     }
 
+    @Test func summaryText() {
+        #expect(SendProgress.Summary(sent: 3, failed: 1).text == "3 sent, 1 failed")
+        #expect(SendProgress.Summary(sent: 0, failed: 2).text == "0 sent, 2 failed")
+        #expect(SendProgress.Summary(sent: 1, failed: 0).text == "1 sent, 0 failed")
+    }
+
     @Test func sentRecordsHistoryAndLeavesQueue() {
         let (queue, history) = Self.stores(["pg:1", "pg:2", "pg:3"])
         var progress = SendProgress()

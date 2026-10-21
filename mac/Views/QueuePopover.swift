@@ -48,6 +48,12 @@ struct QueuePopover: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let summary = failureSummary {
+                Label(summary, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
             if let error = model.sendError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
@@ -106,6 +112,13 @@ struct QueuePopover: View {
         return n == 1 ? "Queue · 1 book" : "Queue · \(n) books"
     }
 
+    /// "3 sent, 1 failed" after a send whose failed books are still in the queue.
+    private var failureSummary: String? {
+        guard !model.isSending, let summary = model.sendProgress.summary, summary.failed > 0,
+              model.queue.items.contains(where: { $0.lastError != nil }) else { return nil }
+        return summary.text
+    }
+
     private var emptyText: String {
         if sentHere, !model.isSending, let summary = model.sendProgress.summary, summary.sent > 0 {
             return summary.sent == 1 ? "Sent 1 book to your Kindle." : "Sent \(summary.sent) books to your Kindle."
@@ -125,6 +138,12 @@ private struct QueueRow: View {
 
     private var edition: Edition { item.edition }
 
+    /// Why this book failed: the current send's failure, else the one kept from the last send.
+    private var errorMessage: String? {
+        if case let .failed(_, message) = event { return message }
+        return item.lastError
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             CoverImage(url: edition.coverURL, title: edition.title, compact: true)
@@ -136,6 +155,14 @@ private struct QueueRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             trailing

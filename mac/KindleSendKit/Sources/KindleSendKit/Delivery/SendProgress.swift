@@ -11,6 +11,9 @@ public struct SendProgress: Sendable, Equatable {
             self.sent = sent
             self.failed = failed
         }
+
+        /// e.g. "3 sent, 1 failed".
+        public var text: String { "\(sent) sent, \(failed) failed" }
     }
 
     /// The latest event for each edition id.

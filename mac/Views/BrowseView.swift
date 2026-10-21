@@ -29,7 +29,8 @@ struct BrowseView: View {
         .searchable(text: $model.query.text, placement: .toolbar, prompt: "Search all libraries")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                QueueButton(count: model.queue.items.count) { showingQueue.toggle() }
+                QueueButton(count: model.queue.items.count,
+                            failed: model.queue.items.filter { $0.lastError != nil }.count) { showingQueue.toggle() }
                     .popover(isPresented: $showingQueue, arrowEdge: .bottom) {
                         QueuePopover().environment(model)
                     }
@@ -40,6 +41,8 @@ struct BrowseView: View {
 
 private struct QueueButton: View {
     let count: Int
+    /// Queued books whose last send failed; the badge turns red while any remain.
+    let failed: Int
     let action: () -> Void
 
     var body: some View {
@@ -47,19 +50,28 @@ private struct QueueButton: View {
             HStack(spacing: 5) {
                 Image(systemName: "books.vertical")
                 Text("Queue")
+                if failed > 0 {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
                 if count > 0 {
                     Text("\(count)")
                         .font(.caption2.weight(.bold).monospacedDigit())
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.accentColor))
+                        .background(Capsule().fill(failed > 0 ? Color.red : Color.accentColor))
                 }
             }
         }
-        .help("Queue")
+        .help(failed > 0 ? "Queue: \(failed) failed to send" : "Queue")
         .accessibilityLabel("Queue")
-        .accessibilityValue(count == 1 ? "1 book" : "\(count) books")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        let books = count == 1 ? "1 book" : "\(count) books"
+        return failed > 0 ? "\(books), \(failed) failed" : books
     }
 }
 
