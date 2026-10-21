@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Category: String, CaseIterable, Sendable, Identifiable {
+public enum BookCategory: String, CaseIterable, Sendable, Identifiable {
     case popular, fiction, scienceFiction, mystery, philosophy, history, poetry, childrens
 
     public var id: String { rawValue }

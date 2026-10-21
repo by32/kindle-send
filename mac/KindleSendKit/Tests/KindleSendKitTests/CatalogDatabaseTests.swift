@@ -41,13 +41,19 @@ import Testing
             edition("se:/ebooks/bob-jones/the-lost-world", "The Lost World", "Bob Jones", source: .standardEbooks),
             edition("pg:7001", "The Lost World", "Bob Jones"),
         ]),
+        Work(id: "star voyage|cal reyes", editions: [
+            edition("pg:8000", "Star Voyage", "Cal Reyes", subjects: ["Category: Science-Fiction & Fantasy"]),
+        ]),
+        Work(id: "dune road|ed marsh", editions: [
+            edition("pg:8001", "Dune Road", "Ed Marsh", languages: ["eng"]),
+        ]),
     ]
 
     private func database() throws -> CatalogDatabase {
         try CatalogDatabase.build(at: nil, works: Self.works)
     }
 
-    private func titles(_ text: String, category: KindleSendKit.Category = .popular, language: String? = nil) throws -> [String] {
+    private func titles(_ text: String, category: BookCategory = .popular, language: String? = nil) throws -> [String] {
         try database().search(SearchQuery(text: text, category: category, language: language))
             .map(\.defaultEdition.title)
     }
@@ -93,16 +99,51 @@ import Testing
         #expect(db.builtAt != nil)
     }
 
-    @Test func fileDatabaseReopens() throws {
+    @Test func pipeFiltersDoNotMatchNearCollisions() throws {
+        #expect(try !titles("", language: "en").contains("Dune Road"))
+        #expect(try titles("", language: "eng") == ["Dune Road"])
+        #expect(try titles("", category: .fiction) == ["Pride and Prejudice"])
+        #expect(try titles("", category: .scienceFiction) == ["Star Voyage"])
+    }
+
+    @Test func shortQueriesMatchTitlePrefixByPopularity() throws {
+        #expect(try titles("l") == ["Leaves of Grass", "Les Misérables"])
+        #expect(try titles("L", language: "en") == ["Leaves of Grass"])
+        #expect(try titles("pr") == ["Pride and Prejudice", "Prejudice and Pride: A Study"])
+        #expect(try titles("zq").isEmpty)
+    }
+
+    @Test func builtFileReopensReadOnlyWithoutSidecars() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("catalog.sqlite")
-        _ = try CatalogDatabase.build(at: url, works: Self.works)
+        try CatalogDatabase.build(at: url, works: Self.works).close()
+
         let reopened = try CatalogDatabase(url: url)
         #expect(reopened.builtAt != nil)
         let hits = try reopened.search(SearchQuery(text: "raven", category: .popular, language: nil))
         #expect(hits.map(\.defaultEdition.title) == ["The Raven"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["catalog.sqlite"])
+        reopened.close()
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["catalog.sqlite"])
+    }
+
+    @Test func closedDatabaseThrows() throws {
+        let db = try database()
+        db.close()
+        db.close()
+        #expect(throws: CatalogDatabaseError.closed) {
+            try db.search(SearchQuery(text: "raven"))
+        }
+        #expect(throws: CatalogDatabaseError.closed) { try db.work(id: "raven|edgar poe") }
+        #expect(db.builtAt == nil)
+    }
+
+    @Test func readOnlyOpenOfMissingFileThrows() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        #expect(throws: CatalogDatabaseError.self) { try CatalogDatabase(url: url) }
+        #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
     // MARK: - Benchmark
@@ -115,15 +156,23 @@ import Testing
         let editions = try GutenbergCatalogParser.parse(csv: try Self.readCatalog(path))
         let works = WorkGrouper.group(editions)
 
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("catalog.sqlite")
+
+        // The app's path: build to a file, close it, reopen it read-only.
         let buildStart = ContinuousClock.now
-        let db = try CatalogDatabase.build(at: nil, works: works)
+        try CatalogDatabase.build(at: url, works: works).close()
         let buildTime = ContinuousClock.now - buildStart
+        let db = try CatalogDatabase(url: url)
 
         let queries = [
             "pride", "dostoyevsky", "sherlock holmes", "austen", "war and peace",
             "frankenstein", "moby dick", "dickens", "shakespeare", "the", "a",
             "sherlok", "tolstoi", "alice in wonderland", "history of rome", "poems",
             "great expectations", "dracula", "jane eyre", "kafka metamorphosis",
+            "the adventures of sherlok holmes", "t",
         ]
         var times: [Duration] = []
         for text in queries {
@@ -133,9 +182,12 @@ import Testing
             times.append(elapsed)
             print("bench query \"\(text)\": \(elapsed)")
         }
-        let median = times.sorted()[times.count / 2]
-        print("bench: \(works.count) works, build \(buildTime), median query \(median), max \(times.max()!)")
+        let sorted = times.sorted()
+        let median = sorted[sorted.count / 2]
+        let p95 = sorted[Int((Double(sorted.count) * 0.95).rounded(.up)) - 1]
+        print("bench: \(works.count) works, \(queries.count) queries, build \(buildTime), median \(median), p95 \(p95), max \(sorted.last!)")
         #expect(median < .milliseconds(50))
+        #expect(p95 < .milliseconds(50))
     }
 
     private static func readCatalog(_ path: String) throws -> String {

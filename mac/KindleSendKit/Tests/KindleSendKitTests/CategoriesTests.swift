@@ -11,21 +11,21 @@ import Testing
 
     @Test func historyPrefixMatches() {
         let e = edition(.gutenberg, subjects: ["Category: History - American"])
-        #expect(Category.history.matches(e))
-        #expect(!Category.poetry.matches(e))
+        #expect(BookCategory.history.matches(e))
+        #expect(!BookCategory.poetry.matches(e))
     }
 
     @Test func popularMatchesEverything() {
-        #expect(Category.popular.matches(edition(.gutenberg, subjects: [])))
+        #expect(BookCategory.popular.matches(edition(.gutenberg, subjects: [])))
     }
 
     @Test func standardEbooksSlugsMatchExactly() {
-        #expect(Category.scienceFiction.matches(edition(.standardEbooks, subjects: ["science-fiction"])))
-        #expect(!Category.history.matches(edition(.standardEbooks, subjects: ["history-of-art"])))
+        #expect(BookCategory.scienceFiction.matches(edition(.standardEbooks, subjects: ["science-fiction"])))
+        #expect(!BookCategory.history.matches(edition(.standardEbooks, subjects: ["history-of-art"])))
     }
 
     @Test func titles() {
-        #expect(Category.allCases.map(\.title) == [
+        #expect(BookCategory.allCases.map(\.title) == [
             "Popular", "Fiction", "Science Fiction", "Mystery", "Philosophy", "History", "Poetry", "Children's",
         ])
     }
@@ -35,17 +35,17 @@ import Testing
         var pg = edition(.gutenberg, subjects: ["Category: Novels"])
         pg.id = "pg:2"
         let work = Work(id: "k", editions: [se, pg])
-        #expect(Category.fiction.matches(work))
-        #expect(Category.scienceFiction.matches(work))
-        #expect(!Category.poetry.matches(work))
+        #expect(BookCategory.fiction.matches(work))
+        #expect(BookCategory.scienceFiction.matches(work))
+        #expect(!BookCategory.poetry.matches(work))
     }
 
     @Test func mixedGutenbergSubjectsAndShelvesMatch() {
         let e = edition(.gutenberg, subjects: ["Monsters -- Fiction", "Science fiction", "Category: Short Stories"])
-        #expect(Category.fiction.matches(e))
+        #expect(BookCategory.fiction.matches(e))
     }
 
     @Test func bareHistorySubjectDoesNotMatchGutenberg() {
-        #expect(!Category.history.matches(edition(.gutenberg, subjects: ["history"])))
+        #expect(!BookCategory.history.matches(edition(.gutenberg, subjects: ["history"])))
     }
 }

@@ -3,12 +3,12 @@ import SQLite3
 
 public struct SearchQuery: Sendable, Equatable {
     public var text: String
-    public var category: Category
+    public var category: BookCategory
     /// ISO 639-1 code; nil = all languages.
     public var language: String?
     public var limit: Int = 120
 
-    public init(text: String, category: Category = .popular, language: String? = nil, limit: Int = 120) {
+    public init(text: String, category: BookCategory = .popular, language: String? = nil, limit: Int = 120) {
         self.text = text
         self.category = category
         self.language = language
@@ -18,12 +18,15 @@ public struct SearchQuery: Sendable, Equatable {
 
 public enum CatalogDatabaseError: Error, Equatable {
     case sqlite(code: Int32, message: String)
+    /// The database was used after `close()`.
+    case closed
 }
 
 /// The local SQLite search index. Every use of the sqlite handle runs on `queue`.
 public final class CatalogDatabase: @unchecked Sendable {
     private let queue = DispatchQueue(label: "KindleSendKit.CatalogDatabase")
-    private let db: OpaquePointer
+    /// nil after `close()`. Only touched on `queue` (and in `deinit`).
+    private var connection: OpaquePointer?
     private let decoder = JSONDecoder()
 
     /// Exact searches returning fewer hits than this trigger the typo fallback.
@@ -31,39 +34,73 @@ public final class CatalogDatabase: @unchecked Sendable {
     private static let typoMinQueryLength = 4
     private static let typoCandidates = 300
     private static let typoMinSimilarity = 0.3
+    /// Folded queries this short use the title-prefix path instead of FTS.
+    private static let shortQueryMaxLength = 2
 
-    /// Opens (or creates) the database at `url`; nil = in-memory.
-    public init(url: URL?) throws {
+    /// Opens an existing index file read-only. It never creates the file or any sidecar
+    /// (`-journal`, `-wal`, `-shm`). nil = an empty, writable in-memory index.
+    public convenience init(url: URL?) throws {
+        if let url {
+            try self.init(path: url.path, flags: SQLITE_OPEN_READONLY, createSchema: false)
+        } else {
+            try self.init(path: ":memory:", flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, createSchema: true)
+        }
+    }
+
+    private init(path: String, flags: Int32, createSchema: Bool) throws {
         var handle: OpaquePointer?
-        let path = url?.path ?? ":memory:"
-        let rc = sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        let rc = sqlite3_open_v2(path, &handle, flags, nil)
         guard rc == SQLITE_OK, let handle else {
             let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "cannot open \(path)"
-            sqlite3_close(handle)
+            sqlite3_close_v2(handle)
             throw CatalogDatabaseError.sqlite(code: rc, message: message)
         }
-        db = handle
-        try queue.sync {
-            try exec("PRAGMA journal_mode=WAL")
-            try exec(Self.schema)
+        connection = handle
+        // Memory-map reads; the index is read far more than written.
+        sqlite3_exec(handle, "PRAGMA mmap_size=268435456", nil, nil, nil)
+        guard createSchema else { return }
+        do {
+            // Rollback journal, not WAL: a closed index is one self-contained file that can be
+            // swapped into place atomically.
+            try queue.sync {
+                try exec("PRAGMA journal_mode=DELETE")
+                try exec("PRAGMA synchronous=OFF")
+                try exec(Self.schema)
+            }
+        } catch {
+            close()
+            throw error
         }
     }
 
     deinit {
-        sqlite3_close(db)
+        if let connection { sqlite3_close_v2(connection) }
     }
 
-    /// Builds a fresh database at `url` (replacing any existing file; nil = in-memory),
-    /// writing every work in one transaction.
+    /// Builds a fresh, writable index at `url` (nil = in-memory), writing every work in one
+    /// transaction. **Deletes any existing file at `url`**, so callers replacing a live index
+    /// must build at a temporary path, `close()` it, then swap it into place.
     public static func build(at url: URL?, works: [Work]) throws -> CatalogDatabase {
+        let database: CatalogDatabase
         if let url {
-            for suffix in ["", "-wal", "-shm"] {
+            for suffix in ["", "-journal", "-wal", "-shm"] {
                 try? FileManager.default.removeItem(atPath: url.path + suffix)
             }
+            database = try CatalogDatabase(
+                path: url.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, createSchema: true)
+        } else {
+            database = try CatalogDatabase(url: nil)
         }
-        let database = try CatalogDatabase(url: url)
         try database.queue.sync { try database.insert(works) }
         return database
+    }
+
+    /// Closes the connection. Idempotent; later calls throw `CatalogDatabaseError.closed`.
+    public func close() {
+        queue.sync {
+            if let connection { sqlite3_close_v2(connection) }
+            connection = nil
+        }
     }
 
     public func search(_ q: SearchQuery) throws -> [Work] {
@@ -72,7 +109,7 @@ public final class CatalogDatabase: @unchecked Sendable {
 
     public func work(id: String) throws -> Work? {
         try queue.sync {
-            let stmt = try Statement(db, "SELECT id, json FROM works WHERE id = ?1")
+            let stmt = try Statement(handle(), "SELECT id, json FROM works WHERE id = ?1")
             try stmt.bind(1, id)
             return try stmt.step() ? decodeWork(stmt) : nil
         }
@@ -80,7 +117,7 @@ public final class CatalogDatabase: @unchecked Sendable {
 
     public var builtAt: Date? {
         queue.sync {
-            guard let stmt = try? Statement(db, "SELECT value FROM meta WHERE key = 'built_at'"),
+            guard let stmt = try? Statement(handle(), "SELECT value FROM meta WHERE key = 'built_at'"),
                   (try? stmt.step()) == true,
                   let seconds = Double(stmt.text(0))
             else { return nil }
@@ -88,13 +125,20 @@ public final class CatalogDatabase: @unchecked Sendable {
         }
     }
 
+    private func handle() throws -> OpaquePointer {
+        guard let connection else { throw CatalogDatabaseError.closed }
+        return connection
+    }
+
     // MARK: - Schema and build
 
     private static let schema = """
         CREATE TABLE IF NOT EXISTS works(
             id TEXT PRIMARY KEY, json BLOB, popularity INTEGER, has_se INTEGER,
-            languages TEXT, categories TEXT);
+            languages TEXT, categories TEXT, title_prefix1 TEXT, title_prefix2 TEXT);
         CREATE INDEX IF NOT EXISTS works_browse ON works(has_se DESC, popularity DESC);
+        CREATE INDEX IF NOT EXISTS works_prefix1 ON works(title_prefix1, has_se DESC, popularity DESC);
+        CREATE INDEX IF NOT EXISTS works_prefix2 ON works(title_prefix2, has_se DESC, popularity DESC);
         CREATE VIRTUAL TABLE IF NOT EXISTS works_fts USING fts5(
             title, authors, subjects, content='', tokenize='unicode61 remove_diacritics 2');
         CREATE VIRTUAL TABLE IF NOT EXISTS works_tri USING fts5(title_authors, tokenize='trigram');
@@ -105,18 +149,19 @@ public final class CatalogDatabase: @unchecked Sendable {
         try exec("BEGIN")
         do {
             let encoder = JSONEncoder()
-            let insertWork = try Statement(db, """
-                INSERT INTO works(rowid, id, json, popularity, has_se, languages, categories)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            let insertWork = try Statement(handle(), """
+                INSERT INTO works(
+                    rowid, id, json, popularity, has_se, languages, categories, title_prefix1, title_prefix2)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 """)
-            let insertFTS = try Statement(db, "INSERT INTO works_fts(rowid, title, authors, subjects) VALUES (?1, ?2, ?3, ?4)")
-            let insertTri = try Statement(db, "INSERT INTO works_tri(rowid, title_authors) VALUES (?1, ?2)")
+            let insertFTS = try Statement(handle(), "INSERT INTO works_fts(rowid, title, authors, subjects) VALUES (?1, ?2, ?3, ?4)")
+            let insertTri = try Statement(handle(), "INSERT INTO works_tri(rowid, title_authors) VALUES (?1, ?2)")
 
             for (index, work) in works.enumerated() {
                 let rowid = Int64(index + 1)
                 let editions = work.editions
                 let languages = Set(editions.flatMap(\.languages)).sorted()
-                let categories = Category.allCases.filter { $0 != .popular && $0.matches(work) }.map(\.rawValue)
+                let categories = BookCategory.allCases.filter { $0 != .popular && $0.matches(work) }.map(\.rawValue)
                 let titles = Self.foldedUnique(editions.map(\.title))
                 let authors = Self.foldedUnique(editions.flatMap(\.authors))
                 let subjects = Self.foldedUnique(editions.flatMap(\.subjects))
@@ -129,6 +174,9 @@ public final class CatalogDatabase: @unchecked Sendable {
                 try insertWork.bind(5, editions.contains { $0.source == .standardEbooks } ? 1 : 0)
                 try insertWork.bind(6, Self.pipeList(languages))
                 try insertWork.bind(7, Self.pipeList(categories))
+                let title = foldForSearch(work.defaultEdition.title)
+                try insertWork.bind(8, String(title.prefix(1)))
+                try insertWork.bind(9, String(title.prefix(2)))
                 try insertWork.run()
 
                 try insertFTS.reset()
@@ -144,7 +192,7 @@ public final class CatalogDatabase: @unchecked Sendable {
                 try insertTri.run()
             }
 
-            let meta = try Statement(db, "INSERT OR REPLACE INTO meta(key, value) VALUES ('built_at', ?1)")
+            let meta = try Statement(handle(), "INSERT OR REPLACE INTO meta(key, value) VALUES ('built_at', ?1)")
             try meta.bind(1, String(Date().timeIntervalSince1970))
             try meta.run()
             try exec("COMMIT")
@@ -175,7 +223,7 @@ public final class CatalogDatabase: @unchecked Sendable {
         let category = q.category == .popular ? nil : "%|\(q.category.rawValue)|%"
 
         guard !folded.isEmpty else {
-            let stmt = try Statement(db, """
+            let stmt = try Statement(handle(), """
                 SELECT id, json FROM works
                 WHERE (?1 IS NULL OR languages LIKE ?1) AND (?2 IS NULL OR categories LIKE ?2)
                 ORDER BY has_se DESC, popularity DESC LIMIT ?3
@@ -185,9 +233,26 @@ public final class CatalogDatabase: @unchecked Sendable {
             return try collect(stmt)
         }
 
+        if folded.count <= Self.shortQueryMaxLength {
+            // bm25 over a 1-2 character prefix would score most of the catalog. Instead match
+            // the default title's first characters; the (prefix, has_se, popularity) index
+            // yields rows already in order, so only `limit` rows are read.
+            let column = folded.count == 1 ? "title_prefix1" : "title_prefix2"
+            let stmt = try Statement(handle(), """
+                SELECT id, json FROM works
+                WHERE \(column) = ?3
+                  AND (?1 IS NULL OR languages LIKE ?1) AND (?2 IS NULL OR categories LIKE ?2)
+                ORDER BY has_se DESC, popularity DESC LIMIT ?4
+                """)
+            try bindFilters(stmt, language, category)
+            try stmt.bind(3, folded)
+            try stmt.bind(4, Int64(limit))
+            return try collect(stmt)
+        }
+
         let tokens = folded.split(separator: " ").map(String.init)
         let match = tokens.map { "\"\(Self.quoteEscaped($0))\"*" }.joined(separator: " ")
-        let exact = try Statement(db, """
+        let exact = try Statement(handle(), """
             SELECT w.id, w.json FROM works_fts JOIN works w ON w.rowid = works_fts.rowid
             WHERE works_fts MATCH ?3
               AND (?1 IS NULL OR w.languages LIKE ?1) AND (?2 IS NULL OR w.categories LIKE ?2)
@@ -219,7 +284,7 @@ public final class CatalogDatabase: @unchecked Sendable {
         guard !trigrams.isEmpty else { return [] }
         let match = trigrams.sorted().map { "\"\(Self.quoteEscaped($0))\"" }.joined(separator: " OR ")
 
-        let stmt = try Statement(db, """
+        let stmt = try Statement(handle(), """
             SELECT w.rowid, works_tri.title_authors, w.popularity
             FROM works_tri JOIN works w ON w.rowid = works_tri.rowid
             WHERE works_tri MATCH ?3
@@ -242,7 +307,7 @@ public final class CatalogDatabase: @unchecked Sendable {
         }
         scored.sort { ($0.similarity, $0.popularity) > ($1.similarity, $1.popularity) }
 
-        let fetch = try Statement(db, "SELECT id, json FROM works WHERE rowid = ?1")
+        let fetch = try Statement(handle(), "SELECT id, json FROM works WHERE rowid = ?1")
         return try scored.prefix(limit).compactMap { candidate in
             try fetch.reset()
             try fetch.bind(1, candidate.rowid)
@@ -271,6 +336,7 @@ public final class CatalogDatabase: @unchecked Sendable {
     }
 
     private func exec(_ sql: String) throws {
+        let db = try handle()
         let rc = sqlite3_exec(db, sql, nil, nil, nil)
         guard rc == SQLITE_OK else {
             throw CatalogDatabaseError.sqlite(code: rc, message: String(cString: sqlite3_errmsg(db)))
