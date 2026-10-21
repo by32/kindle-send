@@ -8,7 +8,7 @@ Sources:
 
 Delivery providers: Gmail, iCloud, Fastmail, Yahoo, any SMTP server, Amazon SES, Resend.
 
-Only the Python standard library is used (Python 3.11+).
+Only the Python standard library is used (Python 3.9+, so the python3 that ships with macOS works).
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import smtplib
 import ssl
 import sys
 import tempfile
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,6 +34,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:  # Python < 3.11, e.g. the python3 that ships with macOS
+    tomllib = None
 
 USER_AGENT = "kindle-send/1.0 (+personal use)"
 GUTENDEX = "https://gutendex.com/books/"
@@ -240,11 +244,48 @@ class ResendSender:
 
 # --------------------------------------------------------------------------- config
 
+def _parse_simple_toml(text: str) -> dict:
+    """The TOML subset this tool reads and writes: [tables], and keys set to strings, ints or booleans."""
+    data: dict = {}
+    table = data
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if m := re.fullmatch(r"\[\s*([A-Za-z0-9_-]+)\s*\](\s*#.*)?", line):
+            table = data.setdefault(m.group(1), {})
+            continue
+        key, sep, rest = line.partition("=")
+        if not sep:
+            raise ValueError(f"config line {n}: expected key = value")
+        key, rest = key.strip().strip('"'), rest.strip()
+        if rest.startswith('"'):
+            value, end = json.JSONDecoder().raw_decode(rest)  # TOML basic strings use JSON-style escapes
+            rest = rest[end:]
+        elif rest.startswith("'"):
+            end = rest.index("'", 1)
+            value, rest = rest[1:end], rest[end + 1:]
+        else:
+            token, _, comment = rest.partition("#")
+            rest = "#" + comment if comment else ""
+            token = token.strip()
+            value = {"true": True, "false": False}.get(token)
+            if value is None:
+                value = int(token.replace("_", ""))
+        if rest.strip() and not rest.strip().startswith("#"):
+            raise ValueError(f"config line {n}: unexpected text after value")
+        table[key] = value
+    return data
+
+
 def _read_toml(path: Path) -> dict:
     if not path.exists():
         return {}
-    with path.open("rb") as f:
-        data = tomllib.load(f)
+    if tomllib:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = _parse_simple_toml(path.read_text(encoding="utf-8"))
     # Configs from the first version were flat smtp_* keys; fold them into a provider table.
     if "smtp_user" in data:
         host = data.pop("smtp_host", "smtp.gmail.com")

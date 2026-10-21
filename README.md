@@ -2,7 +2,7 @@
 
 Send free, open-format ebooks (Project Gutenberg, Standard Ebooks, any EPUB/PDF URL, or local files)
 to your Kindle in one command, using Amazon's Send-to-Kindle email service.
-Needs only Python 3.11+, with no extra packages.
+Needs only Python 3.9+, with no extra packages. The `python3` that ships with macOS works.
 
 ## Setup
 

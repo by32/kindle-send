@@ -127,6 +127,15 @@ class ConfigTests(EnvTestCase):
         with self.assertRaises(SystemExit):
             self.load("pigeon")
 
+    def test_fallback_toml_parser_matches_tomllib(self):
+        if ks.tomllib is None:
+            self.skipTest("tomllib needs Python 3.11+")
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        example = readme.split("```toml\n", 1)[1].split("```", 1)[0]
+        tricky = 'a = "q\\"uote \\\\ back # not a comment"  # comment\nb = \'lit#eral\'\n[t] # c\nn = 1_000\nf = false\n'
+        for text in (example, tricky):
+            self.assertEqual(ks._parse_simple_toml(text), ks.tomllib.loads(text))
+
     def test_toml_round_trip_with_awkward_password(self):
         data = {"kindle_email": "k@kindle.com", "provider": "smtp",
                 "smtp": {"host": "h", "port": 587, "user": "u", "password": 'a"b\\c ü', "from": None}}
