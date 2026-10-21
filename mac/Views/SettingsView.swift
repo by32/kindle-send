@@ -92,6 +92,14 @@ struct SettingsView: View {
         .frame(width: 500)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear(perform: loadDrafts)
+        .onChange(of: model.importCount) { loadDrafts() }
+        .onChange(of: model.settings.kindleEmail) { _, new in kindleDraft = new }
+        .onChange(of: model.settings.user) { _, new in
+            userDraft = new
+            // The password belongs to the account: show the new user's if one is stored, else keep
+            // what was typed so it can be saved for this user.
+            if let stored = model.storedPassword() { passwordDraft = stored }
+        }
         .onChange(of: focus) { old, _ in commit(old) }
         .onDisappear { commit(focus) }
     }
@@ -171,8 +179,6 @@ struct SettingsView: View {
         model.settings.user = userDraft
         test = .idle
         passwordError = nil
-        // The password belongs to the account: show the new user's, if one is stored.
-        passwordDraft = model.storedPassword() ?? ""
     }
 
     private func commitPassword() {

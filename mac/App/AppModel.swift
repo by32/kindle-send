@@ -47,6 +47,8 @@ enum AppModelError: LocalizedError {
     var isOfferingCLIImport = false
     /// Set when an accepted CLI import could not be completed.
     var cliImportError: String?
+    /// Bumped by each completed import so an open Settings window reloads its drafts.
+    private(set) var importCount = 0
 
     /// Disk-write failures for the queue or history, for a non-modal warning in the window.
     var saveWarning: String? {
@@ -56,7 +58,8 @@ enum AppModelError: LocalizedError {
     }
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let keychain = KeychainStore()
+    @ObservationIgnored private let keychain: KeychainStore
+    @ObservationIgnored private let cliConfigURL: URL
     @ObservationIgnored private let http = URLSessionHTTPClient()
     @ObservationIgnored private let databaseURL: URL
     @ObservationIgnored private let updater: CatalogUpdater
@@ -66,12 +69,19 @@ enum AppModelError: LocalizedError {
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var staleCheckTask: Task<Void, Never>?
 
-    /// `KINDLESEND_DATA_DIR` and `KINDLESEND_DEFAULTS_SUITE` redirect the app-data directory and the
-    /// preferences domain, so a test run cannot touch the real ones.
-    init(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        let dataDir = environment["KINDLESEND_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? URL.applicationSupportDirectory.appendingPathComponent("KindleSend", isDirectory: true)
-        defaults = environment["KINDLESEND_DEFAULTS_SUITE"].flatMap(UserDefaults.init(suiteName:)) ?? .standard
+    /// In Debug builds, `KINDLESEND_DATA_DIR` (and optionally `KINDLESEND_DEFAULTS_SUITE`) switch the
+    /// data directory, preferences, Keychain service and CLI config path to test copies; see
+    /// `AppEnvironment`. Release builds ignore the environment and always use the real locations.
+    init() {
+        #if DEBUG
+        let env = AppEnvironment(environment: ProcessInfo.processInfo.environment)
+        #else
+        let env = AppEnvironment(environment: [:])
+        #endif
+        let dataDir = env.dataDirectory
+        defaults = env.defaultsSuite.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        keychain = KeychainStore(service: env.keychainService)
+        cliConfigURL = env.cliConfigURL
         settings = AppSettings.load(from: defaults)
         databaseURL = dataDir.appendingPathComponent("catalog.sqlite")
         updater = CatalogUpdater(http: http, databaseURL: databaseURL)
@@ -174,6 +184,9 @@ enum AppModelError: LocalizedError {
             let found: [Work]?
             do {
                 found = try database.search(q)
+            } catch CatalogDatabaseError.closed {
+                // The index was swapped mid-search; the swap re-runs the query.
+                found = nil
             } catch {
                 Self.logger.error("Search failed: \(error.localizedDescription, privacy: .public)")
                 found = nil
@@ -237,11 +250,11 @@ enum AppModelError: LocalizedError {
             sendError = error.localizedDescription
             return
         }
+        sendError = nil
         let items = queue.items
         guard !items.isEmpty else { return }
 
         isSending = true
-        sendError = nil
         sendProgress = SendProgress()
         for item in items where item.lastError != nil { queue.setError(nil, for: item.id) }
         let job = SendJob(downloader: EditionDownloader(http: http),
@@ -260,21 +273,19 @@ enum AppModelError: LocalizedError {
 
     private func offerCLIImportIfNeeded() {
         guard !defaults.bool(forKey: Self.cliImportOfferedKey),
-              FileManager.default.fileExists(atPath: CLIConfigImporter.defaultURL.path) else { return }
+              FileManager.default.fileExists(atPath: cliConfigURL.path) else { return }
         isOfferingCLIImport = true
     }
 
     /// Copies the CLI's Kindle address and SMTP account into settings and its password into the Keychain.
     func importCLIConfig() {
         defaults.set(true, forKey: Self.cliImportOfferedKey)
-        guard let imported = CLIConfigImporter.load() else {
-            cliImportError = "Couldn't read \(CLIConfigImporter.defaultURL.path)."
+        guard let imported = CLIConfigImporter.load(from: cliConfigURL) else {
+            cliImportError = "Couldn't read \(cliConfigURL.path)."
             return
         }
-        var s = imported.settings
-        s.kindleEmail = s.kindleEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        s.user = s.user.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings = s
+        settings = imported.applied(to: settings)
+        importCount += 1
         guard let password = imported.password, !password.isEmpty else { return }
         do {
             try savePassword(password)

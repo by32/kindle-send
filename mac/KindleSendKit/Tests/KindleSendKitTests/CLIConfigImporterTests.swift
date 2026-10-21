@@ -33,3 +33,24 @@ struct CLIConfigImporterTests {
         #expect(imported.password == "pw")
     }
 }
+
+struct CLIImportMergeTests {
+    @Test func keepsLanguageAndTrimsAddresses() {
+        let imported = AppSettings(kindleEmail: " a@kindle.com ", provider: .gmail, user: " me@gmail.com\n",
+                                   from: "  ", language: "en")
+        let current = AppSettings(kindleEmail: "old@kindle.com", provider: .icloud, user: "old", language: nil)
+        let merged = CLIConfigImporter.Imported(settings: imported, password: "pw").applied(to: current)
+        #expect(merged.kindleEmail == "a@kindle.com")
+        #expect(merged.user == "me@gmail.com")
+        #expect(merged.provider == .gmail)
+        #expect(merged.from == nil)
+        #expect(merged.language == nil)
+    }
+
+    @Test func trimsNonEmptyFrom() {
+        let imported = AppSettings(user: "u", from: " me@x.com ")
+        let merged = CLIConfigImporter.Imported(settings: imported, password: nil).applied(to: AppSettings(language: "fr"))
+        #expect(merged.from == "me@x.com")
+        #expect(merged.language == "fr")
+    }
+}

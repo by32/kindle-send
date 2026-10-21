@@ -5,6 +5,18 @@ public enum CLIConfigImporter {
     public struct Imported: Equatable {
         public var settings: AppSettings
         public var password: String?
+
+        /// The imported account over `current`: keeps the user's language choice and trims the
+        /// addresses (an empty From becomes nil).
+        public func applied(to current: AppSettings) -> AppSettings {
+            var s = settings
+            s.language = current.language
+            s.kindleEmail = s.kindleEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            s.user = s.user.trimmingCharacters(in: .whitespacesAndNewlines)
+            s.from = s.from?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.from?.isEmpty == true { s.from = nil }
+            return s
+        }
     }
 
     public static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
