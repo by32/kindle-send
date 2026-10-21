@@ -83,4 +83,27 @@ import Testing
             languages: ["en"], subjects: [], coverURL: Self.cover)
         #expect(EditionDownloader.filename(for: edition) == "Either-Or- A Fragment - Kierkegaard.epub")
     }
+
+    @Test func filenameScrubsControlCharactersAndTruncatesTitle() {
+        let nasty = Edition(
+            id: "pg:1", source: .gutenberg, title: "Evil\r\nBcc: x@y.z", authors: ["A\nB Poe"],
+            languages: ["en"], subjects: [], coverURL: Self.cover)
+        #expect(EditionDownloader.filename(for: nasty) == "Evil Bcc- x@y.z - Poe.epub")
+
+        let long = Edition(
+            id: "pg:2", source: .gutenberg, title: String(repeating: "T", count: 500), authors: ["Jane Austen"],
+            languages: ["en"], subjects: [], coverURL: Self.cover)
+        #expect(EditionDownloader.filename(for: long) == String(repeating: "T", count: 120) + " - Austen.epub")
+    }
+
+    @Test func overheadCountsTowardCap() async {
+        // Raw bytes whose base64 alone fits the cap, but not with MIME overhead.
+        let cap = 1_048_576
+        let size = 765_000 // encoded ~1,046,800 bytes
+        #expect(Batching.encodedSize(size) <= cap)
+        let http = FakeHTTPClient { _ in Data(count: size) }
+        await #expect(throws: DownloadError.self) {
+            try await EditionDownloader(http: http).download(Self.pride, maxBytes: cap)
+        }
+    }
 }

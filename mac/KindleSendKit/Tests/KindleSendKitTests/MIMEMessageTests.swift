@@ -30,7 +30,7 @@ private typealias Attachment = KindleSendKit.Attachment
         #expect(text.contains("filename=\"Pride.epub\""))
         #expect(text.hasSuffix("--BOUND--\r\n"))
 
-        let part = try #require(text.components(separatedBy: "--BOUND\r\n").dropFirst().first)
+        let part = try #require(text.components(separatedBy: "--BOUND\r\n").dropFirst(2).first)
         let body = try #require(part.components(separatedBy: "\r\n\r\n").dropFirst().first)
         let lines = body.components(separatedBy: "\r\n").filter { !$0.isEmpty }
         #expect(lines.dropLast().allSatisfy { $0.count == 76 })
@@ -82,5 +82,46 @@ private typealias Attachment = KindleSendKit.Attachment
         let words = head.components(separatedBy: "\r\n").filter { $0.contains("=?UTF-8?B?") }
         #expect(words.count > 1)
         #expect(words.allSatisfy { $0.count <= 76 })
+    }
+
+    @Test func textPartComesFirst() throws {
+        let text = Self.build(attachments: [Attachment(filename: "a.epub", data: Data(count: 3))])
+        let parts = text.components(separatedBy: "--BOUND\r\n").dropFirst()
+        let first = try #require(parts.first)
+        #expect(first.hasPrefix("Content-Type: text/plain; charset=utf-8\r\n"))
+        #expect(first.contains("\r\n\r\nSent by Kindle Send.\r\n"))
+        #expect(parts.count == 2)
+    }
+
+    @Test func crlfInFilenameCannotInjectHeaders() {
+        let text = Self.build(attachments: [
+            Attachment(filename: "T\r\nBcc: evil@x.com.epub", data: Data(count: 3)),
+            Attachment(filename: "Ünï\r\nBcc: evil@x.com.epub", data: Data(count: 3)),
+        ])
+        #expect(!text.contains("\r\nBcc:"))
+        #expect(text.contains("filename=\"T Bcc: evil@x.com.epub\""))
+    }
+
+    @Test func crlfInAddressesAndSubjectIsScrubbed() {
+        let data = MIMEMessage.build(
+            from: "a@b.c\r\nBcc: x@y.z", to: "d@e.f\nX-Evil: 1", subject: "Hi\r\nBcc: x@y.z", attachments: [],
+            date: Self.fixedDate, boundary: "BOUND", messageID: "ID-1")
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(!text.contains("\r\nBcc:"))
+        #expect(!text.contains("\r\nX-Evil:"))
+        #expect(text.contains("From: a@b.c Bcc: x@y.z\r\n"))
+        #expect(text.contains("Subject: Hi Bcc: x@y.z\r\n"))
+    }
+
+    @Test func nearCapBatchBuildsMessageWithinCap() {
+        let cap = 20 * 1_048_576
+        let items = (0..<30).map { Attachment(filename: "Book \($0) - \(String(repeating: "x", count: 150)).epub", data: Data(count: 1_048_576 - 7)) }
+        for batch in Batching.batches(items, maxBytes: cap) {
+            let message = MIMEMessage.build(from: "me@icloud.com", to: "kindle@kindle.com", subject: "\(batch.count) books", attachments: batch)
+            #expect(message.count <= cap)
+        }
+        // Packed right up to the limit: one more attachment would not fit.
+        let batch = Batching.batches(items, maxBytes: cap)[0]
+        #expect(Batching.messageOverhead + batch.count * (Batching.attachmentOverhead + Batching.encodedSize(1_048_576 - 7)) <= cap)
     }
 }

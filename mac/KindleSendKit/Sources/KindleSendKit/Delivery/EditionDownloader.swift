@@ -27,13 +27,13 @@ public struct EditionDownloader: Sendable {
     }
 
     /// Downloads the edition's EPUB. For Gutenberg, falls back to the no-images build when the
-    /// full one exceeds the cap (measured on the base64-encoded size).
+    /// full one exceeds the cap (measured on the whole message: base64 size plus MIME overhead).
     public func download(_ edition: Edition, maxBytes: Int) async throws -> Attachment {
         var data = try await fetch(Self.primaryURL(for: edition))
-        if Batching.encodedSize(data.count) > maxBytes, let fallback = Self.noImagesURL(for: edition) {
+        if Batching.singleMessageSize(data.count) > maxBytes, let fallback = Self.noImagesURL(for: edition) {
             data = try await fetch(fallback)
         }
-        if Batching.encodedSize(data.count) > maxBytes {
+        if Batching.singleMessageSize(data.count) > maxBytes {
             throw DownloadError.tooLarge(bytes: data.count, cap: maxBytes)
         }
         return Attachment(filename: Self.filename(for: edition), data: data, mimeType: "application/epub+zip")
@@ -57,8 +57,10 @@ public struct EditionDownloader: Sendable {
 
     /// "{Title} - {Author surname}.epub" with `/` and `:` replaced by `-`.
     static func filename(for edition: Edition) -> String {
-        var name = edition.title
-        if let surname = edition.authors.first?.split(separator: " ").last { name += " - \(surname)" }
+        var name = String(MIMEMessage.scrub(edition.title).prefix(120))
+        if let surname = MIMEMessage.scrub(edition.authors.first ?? "").split(separator: " ").last {
+            name += " - \(surname)"
+        }
         return name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-") + ".epub"
     }
 

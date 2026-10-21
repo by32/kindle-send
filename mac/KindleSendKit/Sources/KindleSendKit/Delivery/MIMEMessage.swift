@@ -29,8 +29,15 @@ public enum MIMEMessage {
             "MIME-Version: 1.0",
             "Content-Type: multipart/mixed; boundary=\"\(boundary)\"",
             "",
+            "--\(boundary)",
+            "Content-Type: text/plain; charset=utf-8",
+            "Content-Transfer-Encoding: 7bit",
+            "",
+            "Sent by Kindle Send.",
         ]
         for attachment in attachments {
+            let attachment = Attachment(
+                filename: scrub(attachment.filename), data: attachment.data, mimeType: scrub(attachment.mimeType))
             lines += [
                 "--\(boundary)",
                 "Content-Type: \(attachment.mimeType); \(nameParameter(attachment.filename))",
@@ -47,8 +54,14 @@ public enum MIMEMessage {
     // MARK: - Headers
 
     /// Header values must stay on one line.
-    private static func headerValue(_ value: String) -> String {
-        value.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+    private static func headerValue(_ value: String) -> String { scrub(value) }
+
+    /// Replaces control characters (including CR/LF) with spaces and collapses whitespace runs.
+    static func scrub(_ value: String) -> String {
+        let spaced = String(String.UnicodeScalarView(value.unicodeScalars.map {
+            $0.value < 0x20 || $0.value == 0x7f ? " " : $0
+        }))
+        return spaced.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
     }
 
     static func rfc5322Date(_ date: Date) -> String {
