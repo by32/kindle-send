@@ -25,6 +25,8 @@ Then run the `KindleSend` scheme in Xcode.
 
 ## Tests
 
+Run from the repository root (not `mac/`):
+
 ```sh
 swift test --package-path mac/KindleSendKit
 ```
