@@ -25,11 +25,13 @@ public func matchKey(title: String, primaryAuthor: String) -> String {
 }
 
 /// "Austen, Jane, 1775-1817" -> "Jane Austen"; "Homer, 751? BCE-651? BCE" -> "Homer".
+/// Parenthetical expansions are dropped: "Wells, H. G. (Herbert George), 1866-1946" -> "H. G. Wells".
 public func displayAuthor(fromGutenberg raw: String) -> String {
-    let parts = raw.split(separator: ",", omittingEmptySubsequences: true)
+    let stripped = raw.replacingOccurrences(of: #"\s*\([^)]*\)"#, with: "", options: .regularExpression)
+    let parts = stripped.split(separator: ",", omittingEmptySubsequences: true)
         .map { $0.trimmingCharacters(in: .whitespaces) }
         .filter { !$0.isEmpty && !$0.contains(where: \.isNumber) }
-    guard let family = parts.first else { return raw.trimmingCharacters(in: .whitespaces) }
+    guard let family = parts.first else { return stripped.trimmingCharacters(in: .whitespaces) }
     guard parts.count > 1 else { return family }
     return parts[1] + " " + family
 }

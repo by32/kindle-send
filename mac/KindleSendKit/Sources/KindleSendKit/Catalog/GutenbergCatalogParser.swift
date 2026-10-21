@@ -31,13 +31,17 @@ public enum GutenbergCatalogParser {
 
         var authors: [String] = []
         var credits: [String] = []
+        var firstCredited: String?
         for raw in splitList(row[5]) {
             if let (name, role) = splitRole(raw) {
-                credits.append("\(displayAuthor(fromGutenberg: name)) (\(role))")
+                let display = displayAuthor(fromGutenberg: name)
+                firstCredited = firstCredited ?? display
+                credits.append("\(display) (\(role))")
             } else {
                 authors.append(displayAuthor(fromGutenberg: raw))
             }
         }
+        if authors.isEmpty, let firstCredited { authors = [firstCredited] }
         return Edition(
             id: "pg:\(number)",
             source: .gutenberg,

@@ -27,5 +27,7 @@ import Testing
     @Test func displayAuthorFromGutenberg() {
         #expect(displayAuthor(fromGutenberg: "Austen, Jane, 1775-1817") == "Jane Austen")
         #expect(displayAuthor(fromGutenberg: "Homer, 751? BCE-651? BCE") == "Homer")
+        #expect(displayAuthor(fromGutenberg: "Townsend, F. H. (Frederick Henry), 1868-1920") == "F. H. Townsend")
+        #expect(displayAuthor(fromGutenberg: "Wells, H. G. (Herbert George), 1866-1946") == "H. G. Wells")
     }
 }

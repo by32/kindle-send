@@ -14,7 +14,7 @@ private func fixture(_ name: String, _ ext: String) throws -> String {
 
     @Test func parsesQuotedMultilineAndSkipsNonText() throws {
         let all = try editions()
-        #expect(all.count == 8)  // 9 data rows, one is Sound
+        #expect(all.count == 9)  // 10 data rows, one is Sound
         #expect(!all.contains { $0.id == "pg:3002" })
         let seas = try #require(all.first { $0.id == "pg:464" })
         #expect(seas.title.hasPrefix("In the South Seas"))
@@ -47,7 +47,7 @@ private func fixture(_ name: String, _ ext: String) throws -> String {
         #expect(war.credits == "Aylmer Maude (Translator); Louise Maude (Translator)")
         let eyre = try #require(try editions().first { $0.id == "pg:1260" })
         #expect(eyre.authors == ["Charlotte Brontë"])
-        #expect(eyre.credits == "F. H. (Frederick Henry) Townsend (Illustrator)")
+        #expect(eyre.credits == "F. H. Townsend (Illustrator)")
     }
 
     @Test func rejectsUnexpectedHeader() {
@@ -56,10 +56,21 @@ private func fixture(_ name: String, _ ext: String) throws -> String {
         }
     }
 
-    @Test func popularity() throws {
+    @Test func editorOnlyRowFallsBackToFirstCredit() throws {
+        let jargon = try #require(try editions().first { $0.id == "pg:38" })
+        #expect(jargon.authors == ["Eric S. Raymond"])
+        #expect(jargon.credits == "Eric S. Raymond (Editor); Guy L. Steele (Editor)")
+    }
+
+    @Test func popularityUsesOnlyThirtyDaySection() throws {
         let scores = GutenbergPopularityParser.parse(html: try fixture("top1000_sample", "html"))
-        #expect(scores[2701] == 7134)
-        #expect(scores[1342] == 7123)
-        #expect(scores.count == 5)
+        #expect(scores[2701] == 190821)  // yesterday says 7134, 7 days says 53137
+        #expect(scores[1342] == 186807)
+        #expect(scores[79253] == nil)  // yesterday-only
+        #expect(scores.count == 3)
+    }
+
+    @Test func popularityWithoutThirtyDaySectionIsEmpty() {
+        #expect(GutenbergPopularityParser.parse(html: "<ol><li><a href=\"/ebooks/1\">A by B (5)</a></li></ol>").isEmpty)
     }
 }
