@@ -9,8 +9,16 @@ public protocol SMTPTransport: Sendable {
     func writeLine(_ s: String) async throws
     func write(_ data: Data) async throws
     /// Reads one complete reply, joining the lines of a multiline ("250-…") reply with "\n".
-    func readReply() async throws -> (code: Int, text: String)
+    /// `timeout` overrides the transport's per-read timeout (seconds); nil keeps the default.
+    func readReply(timeout: TimeInterval?) async throws -> (code: Int, text: String)
     func close() async
+}
+
+extension SMTPTransport {
+    /// Reads one reply with the transport's default timeout.
+    public func readReply() async throws -> (code: Int, text: String) {
+        try await readReply(timeout: nil)
+    }
 }
 
 /// Connection-level failures. `SMTPClient` reports them as `SMTPError` with the dialogue stage.
@@ -119,7 +127,7 @@ public final class StreamTaskSMTPTransport: SMTPTransport {
         }
     }
 
-    public func readReply() async throws -> (code: Int, text: String) {
+    public func readReply(timeout: TimeInterval?) async throws -> (code: Int, text: String) {
         let task = try currentTask()
         while true {
             let (reply, atEOF) = try state.withLock { state in
@@ -127,7 +135,7 @@ public final class StreamTaskSMTPTransport: SMTPTransport {
             }
             if let reply { return reply }
             if atEOF { throw SMTPTransportError.connectionClosed }
-            let (data, eof) = try await read(from: task)
+            let (data, eof) = try await read(from: task, timeout: timeout ?? self.timeout)
             state.withLock { state in
                 state.parser.append(data)
                 state.atEOF = eof
@@ -148,7 +156,7 @@ public final class StreamTaskSMTPTransport: SMTPTransport {
         return task
     }
 
-    private func read(from task: URLSessionStreamTask) async throws -> (Data, Bool) {
+    private func read(from task: URLSessionStreamTask, timeout: TimeInterval) async throws -> (Data, Bool) {
         try await withCheckedThrowingContinuation { continuation in
             task.readData(ofMinLength: 1, maxLength: Self.chunkSize, timeout: timeout) { data, atEOF, error in
                 if let error {

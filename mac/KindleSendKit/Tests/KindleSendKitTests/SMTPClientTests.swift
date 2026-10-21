@@ -15,10 +15,16 @@ actor ScriptedTransport: SMTPTransport {
     }
 
     private var replies: [(code: Int, text: String)]
+    private let hangWhenEmpty: Bool
     private(set) var events: [Event] = []
+    /// The `timeout` passed to each `readReply`, in order (nil = the transport's default).
+    private(set) var readTimeouts: [TimeInterval?] = []
 
-    init(_ replies: [(Int, String)]) {
+    /// - Parameter hangWhenEmpty: once the replies run out, reads wait (until cancelled) instead
+    ///   of failing with `connectionClosed`, like a server that never answers.
+    init(_ replies: [(Int, String)], hangWhenEmpty: Bool = false) {
         self.replies = replies.map { (code: $0.0, text: $0.1) }
+        self.hangWhenEmpty = hangWhenEmpty
     }
 
     func connect(host: String, port: Int, tlsImmediately: Bool) async throws {
@@ -27,8 +33,12 @@ actor ScriptedTransport: SMTPTransport {
     func startTLS() async throws { events.append(.startTLS) }
     func writeLine(_ s: String) async throws { events.append(.line(s)) }
     func write(_ data: Data) async throws { events.append(.data(data)) }
-    func readReply() async throws -> (code: Int, text: String) {
-        guard !replies.isEmpty else { throw SMTPTransportError.connectionClosed }
+    func readReply(timeout: TimeInterval?) async throws -> (code: Int, text: String) {
+        readTimeouts.append(timeout)
+        guard !replies.isEmpty else {
+            if hangWhenEmpty { try await Task.sleep(for: .seconds(3600)) }
+            throw SMTPTransportError.connectionClosed
+        }
         return replies.removeFirst()
     }
     func close() async { events.append(.close) }
@@ -141,6 +151,58 @@ actor ScriptedTransport: SMTPTransport {
             #expect(error.code == replies.last!.0)
             #expect(error.errorDescription?.contains(replies.last!.1) == true)
         }
+    }
+
+    @Test func bodyReplyWaitsTenMinutesOtherReadsUseDefault() async throws {
+        let transport = ScriptedTransport([(220, "hi"), (250, "hello"), (235, "ok")] + Self.sendReplies)
+
+        try await Self.client(Self.gmail, transport).send(from: "a@b.c", to: "d@kindle.com", message: Data("x\r\n".utf8))
+
+        // CONNECT, EHLO, AUTH, MAIL FROM, RCPT TO, DATA, then BODY. QUIT's reply is not read.
+        #expect(await transport.readTimeouts == [nil, nil, nil, nil, nil, nil, 600])
+        #expect(SMTPClient.bodyReplyTimeout == 600)
+    }
+
+    @Test func unansweredQuitDoesNotDelaySend() async throws {
+        let transport = ScriptedTransport(
+            [(220, "hi"), (250, "hello"), (235, "ok"), (250, "ok"), (250, "ok"), (354, "go"), (250, "queued")],
+            hangWhenEmpty: true)
+        let start = ContinuousClock.now
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await Self.client(Self.gmail, transport).send(from: "a@b.c", to: "d@kindle.com", message: Data("x\r\n".utf8))
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                Issue.record("send was still waiting after 5 s")
+            }
+            try await group.next()
+            group.cancelAll()
+        }
+
+        #expect(ContinuousClock.now - start < .seconds(2))
+        #expect(await transport.lines.last == "QUIT")
+        #expect(await transport.events.last == .close)
+    }
+
+    @Test func transportFailureAfterSTARTTLSNamesSTARTTLS() async throws {
+        // The TLS handshake fails, so the first read after the upgrade (EHLO's reply) throws.
+        let transport = ScriptedTransport([(220, "hi"), (250, "hello"), (220, "go")])
+
+        let error = try await #require(throws: SMTPError.self) { try await Self.client(Self.icloud, transport).verifyLogin() }
+
+        #expect(error.stage == "STARTTLS")
+        #expect(error.code == 0)
+    }
+
+    @Test func replyCodeErrorAfterSTARTTLSNamesEHLO() async throws {
+        let transport = ScriptedTransport([(220, "hi"), (250, "hello"), (220, "go"), (502, "no EHLO")])
+
+        let error = try await #require(throws: SMTPError.self) { try await Self.client(Self.icloud, transport).verifyLogin() }
+
+        #expect(error.stage == "EHLO")
+        #expect(error.code == 502)
     }
 
     @Test func connectionClosedMidDialogueNamesStage() async throws {
@@ -285,6 +347,19 @@ actor ScriptedTransport: SMTPTransport {
 
         #expect(error.stage == "CONNECT")
         #expect(error.serverText == SMTPTransportError.timedOut.errorDescription)
+    }
+
+    @Test func readTimeoutOverrideReplacesDefault() async throws {
+        let server = try await LocalServer.start { _ in }
+        defer { server.stop() }
+        let transport = StreamTaskSMTPTransport(timeout: 30)
+        try await transport.connect(host: "127.0.0.1", port: server.port, tlsImmediately: false)
+        let start = ContinuousClock.now
+
+        await #expect(throws: SMTPTransportError.timedOut) { try await transport.readReply(timeout: 0.3) }
+
+        #expect(ContinuousClock.now - start < .seconds(5))
+        await transport.close()
     }
 
     @Test func defaultReplyTimeoutIsSixtySeconds() {

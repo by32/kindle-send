@@ -23,6 +23,9 @@ public struct SMTPError: Error, LocalizedError, Equatable {
 /// Logs in with AUTH PLAIN and sends one message per connection.
 public struct SMTPClient: Sendable {
     static let ehloDomain = "kindlesend.local"
+    /// Seconds to wait for the reply to the final "." (RFC 5321 §4.5.3.2.6 recommends 10 minutes):
+    /// a server may scan a large message before accepting it.
+    static let bodyReplyTimeout: TimeInterval = 600
 
     private let account: SMTPAccount
     private let password: String
@@ -48,12 +51,13 @@ public struct SMTPClient: Sendable {
             try await Self.command("DATA", expecting: [354], stage: "DATA", on: connection)
             try await Self.during("BODY") {
                 try await connection.write(Self.dataPayload(message))
-                try await Self.expect([250], stage: "BODY", from: connection)
+                try await Self.expect([250], stage: "BODY", from: connection, timeout: Self.bodyReplyTimeout)
             }
         }
     }
 
-    /// Opens an authenticated session, runs `body`, then sends QUIT and closes.
+    /// Opens an authenticated session, runs `body`, then sends QUIT and closes without waiting for
+    /// QUIT's reply (the work is already done, so a slow or silent server must not delay it).
     private func session(_ body: (SMTPTransport) async throws -> Void) async throws {
         let connection = transport()
         do {
@@ -66,13 +70,17 @@ public struct SMTPClient: Sendable {
             if account.security == .startTLS {
                 try await Self.command("STARTTLS", expecting: [220], stage: "STARTTLS", on: connection)
                 try await Self.during("STARTTLS") { try await connection.startTLS() }
-                try await Self.command("EHLO \(Self.ehloDomain)", expecting: [250], stage: "EHLO", on: connection)
+                // A failed TLS handshake surfaces on the first exchange after the upgrade.
+                do {
+                    try await Self.command("EHLO \(Self.ehloDomain)", expecting: [250], stage: "EHLO", on: connection)
+                } catch let error as SMTPError where error.code == 0 {
+                    throw SMTPError(code: 0, serverText: error.serverText, stage: "STARTTLS")
+                }
             }
             try await Self.command("AUTH PLAIN \(authPlainCredentials)", expecting: [235], stage: "AUTH", on: connection)
             try await body(connection)
             // The work is done; a failed QUIT does not fail it.
             try? await connection.writeLine("QUIT")
-            _ = try? await connection.readReply()
         } catch {
             await connection.close()
             throw error
@@ -92,8 +100,9 @@ public struct SMTPClient: Sendable {
         }
     }
 
-    private static func expect(_ codes: Set<Int>, stage: String, from connection: SMTPTransport) async throws {
-        let reply = try await connection.readReply()
+    private static func expect(_ codes: Set<Int>, stage: String, from connection: SMTPTransport,
+                               timeout: TimeInterval? = nil) async throws {
+        let reply = try await connection.readReply(timeout: timeout)
         guard codes.contains(reply.code) else {
             throw SMTPError(code: reply.code, serverText: reply.text, stage: stage)
         }
