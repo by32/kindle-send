@@ -57,4 +57,7 @@ public enum Category: String, CaseIterable, Sendable, Identifiable {
             return e.subjects.contains { standardEbooksSubjects.contains($0) }
         }
     }
+
+    /// A work belongs to a category when any of its editions does.
+    public func matches(_ w: Work) -> Bool { w.editions.contains(where: matches) }
 }

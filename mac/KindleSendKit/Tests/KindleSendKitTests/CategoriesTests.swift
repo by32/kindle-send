@@ -29,4 +29,23 @@ import Testing
             "Popular", "Fiction", "Science Fiction", "Mystery", "Philosophy", "History", "Poetry", "Children's",
         ])
     }
+
+    @Test func workMatchesWhenAnyEditionDoes() {
+        let se = edition(.standardEbooks, subjects: ["science-fiction"])
+        var pg = edition(.gutenberg, subjects: ["Category: Novels"])
+        pg.id = "pg:2"
+        let work = Work(id: "k", editions: [se, pg])
+        #expect(Category.fiction.matches(work))
+        #expect(Category.scienceFiction.matches(work))
+        #expect(!Category.poetry.matches(work))
+    }
+
+    @Test func mixedGutenbergSubjectsAndShelvesMatch() {
+        let e = edition(.gutenberg, subjects: ["Monsters -- Fiction", "Science fiction", "Category: Short Stories"])
+        #expect(Category.fiction.matches(e))
+    }
+
+    @Test func bareHistorySubjectDoesNotMatchGutenberg() {
+        #expect(!Category.history.matches(edition(.gutenberg, subjects: ["history"])))
+    }
 }
