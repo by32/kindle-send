@@ -37,6 +37,8 @@ enum AppModelError: LocalizedError {
 
     let queue: QueueStore
     let history: SendHistory
+    /// Cover images, cached under the data directory.
+    @ObservationIgnored let covers: CoverCache
     private(set) var sendProgress = SendProgress()
     var sendEvents: [String: SendEvent] { sendProgress.status }
     private(set) var isSending = false
@@ -87,6 +89,7 @@ enum AppModelError: LocalizedError {
         updater = CatalogUpdater(http: http, databaseURL: databaseURL)
         queue = QueueStore(fileURL: dataDir.appendingPathComponent("queue.json"))
         history = SendHistory(fileURL: dataDir.appendingPathComponent("history.json"))
+        covers = CoverCache(dataDirectory: dataDir, http: URLSessionHTTPClient())
     }
 
     // MARK: - Launch and the index lifecycle

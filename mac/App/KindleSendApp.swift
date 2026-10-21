@@ -55,26 +55,3 @@ struct RootView: View {
         }
     }
 }
-
-/// Placeholder until Task 12 builds the real browser.
-struct BrowseView: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        @Bindable var model = model
-        VStack(alignment: .leading) {
-            TextField("Search books", text: $model.query.text)
-                .textFieldStyle(.roundedBorder)
-                .onChange(of: model.query.text) { model.updateSearch() }
-            List(model.results) { work in
-                VStack(alignment: .leading) {
-                    Text(work.defaultEdition.title)
-                    Text(work.defaultEdition.authors.joined(separator: ", "))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding()
-    }
-}
