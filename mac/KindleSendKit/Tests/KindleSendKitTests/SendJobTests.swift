@@ -11,11 +11,16 @@ private struct MailerError: Error, LocalizedError {
 private final class FakeMailer: MailSending {
     private let calls = Mutex<[Data]>([])
     let failingCalls: Set<Int>
-    init(failingCalls: Set<Int> = []) { self.failingCalls = failingCalls }
+    let delay: Duration
+    init(failingCalls: Set<Int> = [], delay: Duration = .zero) {
+        self.failingCalls = failingCalls
+        self.delay = delay
+    }
     var callCount: Int { calls.withLock { $0.count } }
 
     func send(from: String, to: String, message: Data) async throws {
         let n = calls.withLock { $0.append(message); return $0.count }
+        if delay > .zero { try await Task.sleep(for: delay) }
         if failingCalls.contains(n) { throw MailerError() }
     }
 }
@@ -34,7 +39,7 @@ private final class FakeMailer: MailSending {
         return events
     }
 
-    @Test func partialFailureKeepsOnlyFailedInQueue() async {
+    @Test func partialFailureKeepsOnlyFailedInQueue() async throws {
         let (a, b, c, d) = (Self.edition(1, "A"), Self.edition(2, "B"), Self.edition(3, "C"), Self.edition(4, "D"))
         let http = FakeHTTPClient { url in
             if url.absoluteString.contains("/ebooks/2.") { throw HTTPError.status(404, url) }
@@ -52,6 +57,59 @@ private final class FakeMailer: MailSending {
         #expect(events.last == .finished(sent: 2, failed: 2))
         #expect(events.contains(.sending(ids: ["pg:3"], batch: 2, of: 3)))
         #expect(mailer.callCount == 3)
+
+        // Exactly one terminal event per edition id; each .sent follows its batch's .sending.
+        var terminal: [String: Int] = [:]
+        for event in events {
+            switch event {
+            case let .sent(ids): for id in ids { terminal[id, default: 0] += 1 }
+            case let .failed(id, _): terminal[id, default: 0] += 1
+            default: break
+            }
+        }
+        #expect(terminal == ["pg:1": 1, "pg:2": 1, "pg:3": 1, "pg:4": 1])
+        for (i, event) in events.enumerated() {
+            if case let .sent(ids) = event {
+                let sendingIndex = events.firstIndex { if case .sending(ids, _, _) = $0 { true } else { false } }
+                #expect(try #require(sendingIndex) < i)
+            }
+        }
+    }
+
+    @Test func emptyInputFinishesImmediately() async {
+        let mailer = FakeMailer()
+        let job = SendJob(downloader: EditionDownloader(http: FakeHTTPClient { _ in Data() }), mailer: mailer,
+                          from: "me@x.com", to: "k@kindle.com", maxBytes: 20 * Self.mb)
+        let events = await Self.collect(job.run([]))
+        #expect(events == [.finished(sent: 0, failed: 0)])
+        #expect(mailer.callCount == 0)
+    }
+
+    @Test func allDownloadsFail() async {
+        let http = FakeHTTPClient { url in throw HTTPError.status(500, url) }
+        let mailer = FakeMailer()
+        let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
+                          from: "me@x.com", to: "k@kindle.com", maxBytes: 20 * Self.mb)
+        let events = await Self.collect(job.run([Self.edition(1, "A"), Self.edition(2, "B")]))
+        let failures = events.filter { if case .failed = $0 { true } else { false } }
+        #expect(failures.count == 2)
+        #expect(events.last == .finished(sent: 0, failed: 2))
+        #expect(mailer.callCount == 0)
+    }
+
+    @Test func stoppingEarlyCancelsRemainingBatches() async throws {
+        let http = FakeHTTPClient { _ in Data(count: Self.mb) }
+        let mailer = FakeMailer(delay: .milliseconds(150))
+        let job = SendJob(downloader: EditionDownloader(http: http), mailer: mailer,
+                          from: "me@x.com", to: "k@kindle.com", maxBytes: 2_500_000)
+        let editions = (1...4).map { Self.edition($0, "B\($0)") }
+        for await event in job.run(editions) {
+            if case .sent = event { break }
+        }
+        let afterBreak = mailer.callCount
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(afterBreak == 1)
+        #expect(mailer.callCount == afterBreak)
     }
 
     @Test func oversizeBookFailsClearly() async {

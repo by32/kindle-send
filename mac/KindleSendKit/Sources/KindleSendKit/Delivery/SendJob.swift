@@ -34,14 +34,17 @@ public struct SendJob: Sendable {
     public func run(_ editions: [Edition]) -> AsyncStream<SendEvent> {
         AsyncStream { continuation in
             let task = Task {
-                await execute(editions, emit: { continuation.yield($0) })
+                await execute(editions, emit: {
+                    if case .terminated = continuation.yield($0) { return false }
+                    return true
+                })
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    private func execute(_ editions: [Edition], emit: (SendEvent) -> Void) async {
+    private func execute(_ editions: [Edition], emit: (SendEvent) -> Bool) async {
         var sentCount = 0
         var failedCount = 0
 
@@ -49,12 +52,12 @@ public struct SendJob: Sendable {
         var downloaded: [(edition: Edition, attachment: Attachment)] = []
         for edition in editions {
             if Task.isCancelled { return }
-            emit(.downloading(id: edition.id))
+            guard emit(.downloading(id: edition.id)) else { return }
             do {
                 downloaded.append((edition, try await downloader.download(edition, maxBytes: maxBytes)))
             } catch {
                 failedCount += 1
-                emit(.failed(id: edition.id, message: Self.message(for: error)))
+                guard emit(.failed(id: edition.id, message: Self.message(for: error))) else { return }
             }
         }
 
@@ -65,21 +68,23 @@ public struct SendJob: Sendable {
             let members = downloaded[offset..<offset + batch.count]
             offset += batch.count
             let ids = members.map(\.edition.id)
-            emit(.sending(ids: ids, batch: index + 1, of: batches.count))
+            guard emit(.sending(ids: ids, batch: index + 1, of: batches.count)) else { return }
             let subject = batch.count == 1 ? members.first!.edition.title : "\(batch.count) books"
             let message = MIMEMessage.build(from: from, to: to, subject: subject, attachments: batch)
             do {
                 try await mailer.send(from: from, to: to, message: message)
                 sentCount += ids.count
-                emit(.sent(ids: ids))
+                guard emit(.sent(ids: ids)) else { return }
+                // Let a consumer that has stopped listening cancel us before the next batch is sent.
+                await Task.yield()
             } catch {
                 for id in ids {
                     failedCount += 1
-                    emit(.failed(id: id, message: Self.message(for: error)))
+                    guard emit(.failed(id: id, message: Self.message(for: error))) else { return }
                 }
             }
         }
-        emit(.finished(sent: sentCount, failed: failedCount))
+        _ = emit(.finished(sent: sentCount, failed: failedCount))
     }
 
     private static func message(for error: Error) -> String {

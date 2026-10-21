@@ -12,6 +12,8 @@ public struct QueueItem: Codable, Hashable, Sendable, Identifiable {
 @MainActor @Observable
 public final class QueueStore {
     public private(set) var items: [QueueItem]
+    /// Set when the last write to disk failed; cleared by the next successful write.
+    public private(set) var lastSaveError: String?
     @ObservationIgnored private let store: JSONFileStore<[QueueItem]>
 
     public init(fileURL: URL) {
@@ -26,7 +28,13 @@ public final class QueueStore {
     }
 
     public func remove(id: String) {
-        items.removeAll { $0.id == id }
+        remove(ids: [id])
+    }
+
+    /// Removes many items with a single write.
+    public func remove(ids: [String]) {
+        let doomed = Set(ids)
+        items.removeAll { doomed.contains($0.id) }
         persist()
     }
 
@@ -41,6 +49,6 @@ public final class QueueStore {
     }
 
     private func persist() {
-        try? store.save(items)
+        lastSaveError = store.trySave(items)
     }
 }

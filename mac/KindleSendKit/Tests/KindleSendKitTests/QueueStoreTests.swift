@@ -43,6 +43,11 @@ import Testing
         #expect(QueueStore(fileURL: url).items.isEmpty)
         #expect(!SendHistory(fileURL: url).wasSent(id: "pg:1"))
         #expect(QueueStore(fileURL: Self.tempFile()).items.isEmpty)
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+        let quarantined = try #require(siblings.first { $0.hasPrefix("queue.json.corrupt-") })
+        let kept = try Data(contentsOf: url.deletingLastPathComponent().appendingPathComponent(quarantined))
+        #expect(kept == Data("{not json".utf8))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 
     @Test func historyRecordsAndPersistsDates() {
@@ -57,5 +62,43 @@ import Testing
         #expect(reloaded.sentDate(id: "pg:2") == date)
         #expect(reloaded.sentDate(id: "pg:3") == nil)
         #expect(!reloaded.wasSent(id: "pg:3"))
+    }
+
+    @Test func removeManyPersistsOnce() {
+        let url = Self.tempFile()
+        let queue = QueueStore(fileURL: url)
+        for n in 1...4 { queue.add(Self.edition("pg:\(n)")) }
+        queue.remove(ids: ["pg:1", "pg:3", "pg:99"])
+        #expect(queue.items.map(\.id) == ["pg:2", "pg:4"])
+        #expect(QueueStore(fileURL: url).items.map(\.id) == ["pg:2", "pg:4"])
+    }
+
+    /// A path whose parent is a regular file, so every write fails.
+    private static func unwritableFile() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let blocker = dir.appendingPathComponent("blocker")
+        try Data().write(to: blocker)
+        return blocker.appendingPathComponent("queue.json")
+    }
+
+    @Test func queueSaveFailureIsVisible() throws {
+        let queue = QueueStore(fileURL: try Self.unwritableFile())
+        queue.add(Self.edition("pg:1"))
+        #expect(queue.lastSaveError != nil)
+        #expect(queue.contains(id: "pg:1"))
+    }
+
+    @Test func historySaveFailureIsVisible() throws {
+        let history = SendHistory(fileURL: try Self.unwritableFile())
+        history.record(ids: ["pg:1"], on: .now)
+        #expect(history.lastSaveError != nil)
+        #expect(history.wasSent(id: "pg:1"))
+    }
+
+    @Test func saveErrorClearsAfterSuccess() {
+        let queue = QueueStore(fileURL: Self.tempFile())
+        queue.add(Self.edition("pg:1"))
+        #expect(queue.lastSaveError == nil)
     }
 }
