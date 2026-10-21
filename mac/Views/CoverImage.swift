@@ -12,10 +12,28 @@ struct CoverImage: View {
     var compact = false
 
     @State private var image: CGImage?
+    /// The url `image` belongs to, so a reused view never shows another book's cover.
+    @State private var imageURL: URL?
+
+    init(url: URL, title: String, compact: Bool = false) {
+        self.url = url
+        self.title = title
+        self.compact = compact
+        // A cache hit renders on the first frame instead of flashing the placeholder.
+        let cached = DecodedCovers.shared.cached(url)
+        _image = State(initialValue: cached)
+        _imageURL = State(initialValue: cached == nil ? nil : url)
+    }
+
+    /// The loaded image when it belongs to `url`, else a cache hit for `url` (so a url change
+    /// still renders a cached cover on its first frame), else nil.
+    private var displayed: CGImage? {
+        imageURL == url ? image : DecodedCovers.shared.cached(url)
+    }
 
     var body: some View {
         ZStack {
-            if let image {
+            if let image = displayed {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .scaledToFill()
@@ -25,7 +43,13 @@ struct CoverImage: View {
         }
         .clipped()
         .task(id: url) {
-            image = await DecodedCovers.shared.image(for: url, from: model.covers)
+            guard imageURL != url else { return }
+            image = nil
+            imageURL = nil
+            let loaded = await DecodedCovers.shared.image(for: url, from: model.covers)
+            guard !Task.isCancelled else { return }
+            image = loaded
+            imageURL = loaded == nil ? nil : url
         }
     }
 }
@@ -60,16 +84,26 @@ struct CoverPlaceholderView: View {
     static let shared = DecodedCovers()
     /// Longest side, in pixels, covers are decoded at: a 2x Retina tile up to ~200 pt wide.
     nonisolated private static let maxPixelSize = 600
+    /// Decoded bitmaps are large (a 600 px cover is ~1 MB), so the cache is bounded by bytes.
+    private static let byteLimit = 150 * 1024 * 1024
     private let cache = NSCache<NSURL, CGImage>()
 
-    private init() { cache.countLimit = 400 }
+    private init() {
+        cache.countLimit = 400
+        cache.totalCostLimit = Self.byteLimit
+    }
+
+    /// The decoded cover if it is in memory; never loads.
+    func cached(_ url: URL) -> CGImage? {
+        cache.object(forKey: url as NSURL)
+    }
 
     /// nil when the cover cannot be loaded (or the caller was cancelled).
     func image(for url: URL, from covers: CoverCache) async -> CGImage? {
-        if let hit = cache.object(forKey: url as NSURL) { return hit }
+        if let hit = cached(url) { return hit }
         guard let data = try? await covers.data(for: url),
               let decoded = await Self.decode(data), !Task.isCancelled else { return nil }
-        cache.setObject(decoded, forKey: url as NSURL)
+        cache.setObject(decoded, forKey: url as NSURL, cost: decoded.bytesPerRow * decoded.height)
         return decoded
     }
 
