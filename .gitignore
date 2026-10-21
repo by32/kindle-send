@@ -7,3 +7,7 @@ books/
 
 # Swift package build output
 mac/KindleSendKit/.build/
+
+# Mac app: generated Xcode project (from mac/project.yml) and local build output
+mac/*.xcodeproj/
+mac/build/
