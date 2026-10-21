@@ -4,3 +4,6 @@ out/
 books/
 *.epub
 .superpowers/
+
+# Swift package build output
+mac/KindleSendKit/.build/
