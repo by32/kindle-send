@@ -79,8 +79,9 @@ public final class CatalogDatabase: @unchecked Sendable {
 
     /// Builds a fresh, writable index at `url` (nil = in-memory), writing every work in one
     /// transaction. **Deletes any existing file at `url`**, so callers replacing a live index
-    /// must build at a temporary path, `close()` it, then swap it into place.
-    public static func build(at url: URL?, works: [Work]) throws -> CatalogDatabase {
+    /// must build at a temporary path, `close()` it, then swap it into place. `partial` marks an
+    /// index built without one of its sources (see `isPartial`).
+    public static func build(at url: URL?, works: [Work], partial: Bool = false) throws -> CatalogDatabase {
         let database: CatalogDatabase
         if let url {
             for suffix in ["", "-journal", "-wal", "-shm"] {
@@ -91,7 +92,7 @@ public final class CatalogDatabase: @unchecked Sendable {
         } else {
             database = try CatalogDatabase(url: nil)
         }
-        try database.queue.sync { try database.insert(works) }
+        try database.queue.sync { try database.insert(works, partial: partial) }
         return database
     }
 
@@ -128,6 +129,12 @@ public final class CatalogDatabase: @unchecked Sendable {
         meta("schema_version").flatMap { Int($0) }
     }
 
+    /// True when the index was built without Standard Ebooks (its listing failed on a first
+    /// build). `CatalogUpdater` treats such an index as stale so the next check retries.
+    public var isPartial: Bool {
+        meta("partial") == "1"
+    }
+
     private func meta(_ key: String) -> String? {
         queue.sync {
             guard let stmt = try? Statement(handle(), "SELECT value FROM meta WHERE key = ?1"),
@@ -158,7 +165,7 @@ public final class CatalogDatabase: @unchecked Sendable {
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
         """
 
-    private func insert(_ works: [Work]) throws {
+    private func insert(_ works: [Work], partial: Bool) throws {
         try exec("BEGIN")
         do {
             let encoder = JSONEncoder()
@@ -207,7 +214,8 @@ public final class CatalogDatabase: @unchecked Sendable {
 
             let insertMeta = try Statement(handle(), "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)")
             for (key, value) in [("built_at", String(Date().timeIntervalSince1970)),
-                                 ("schema_version", String(Self.schemaVersion))] {
+                                 ("schema_version", String(Self.schemaVersion)),
+                                 ("partial", partial ? "1" : "0")] {
                 try insertMeta.reset()
                 try insertMeta.bind(1, key)
                 try insertMeta.bind(2, value)

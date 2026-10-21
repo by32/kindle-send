@@ -109,6 +109,7 @@ final class PhaseLog: Sendable {
         #expect(try db.search(SearchQuery(text: "suspense merriman")).count == 1)
 
         #expect(db.storedSchemaVersion == CatalogDatabase.schemaVersion)
+        #expect(!db.isPartial)
         #expect(!FileManager.default.fileExists(atPath: Self.tempFileURL(for: url).path))
     }
 
@@ -169,16 +170,87 @@ final class PhaseLog: Sendable {
         #expect(try Data(contentsOf: url) == before)
     }
 
-    @Test func emptyFirstListingPageFails() async throws {
+    @Test func emptyFirstListingPageFailsWhenIndexExists() async throws {
         let url = try Self.tempDatabaseURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try CatalogDatabase.build(at: url, works: []).close()
+        let before = try Data(contentsOf: url)
         let http = FakeHTTPClient(try Self.responses(overrides: [StandardEbooksParser.listingURL(1): Self.emptyPage]))
 
         await #expect(throws: CatalogUpdaterError.standardEbooksListingEmpty(StandardEbooksParser.listingURL(1))) {
             try await CatalogUpdater(http: http, databaseURL: url).refresh { _ in }
         }
-        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(try Data(contentsOf: url) == before)
         #expect(!FileManager.default.fileExists(atPath: Self.tempFileURL(for: url).path))
+    }
+
+    // MARK: - Soft failures and the Gutenberg-only first build
+
+    @Test func popularityFailureIsSoft() async throws {
+        let url = try Self.tempDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let http = FakeHTTPClient(try Self.responses(failing: [CatalogUpdater.gutenbergPopularityURL]))
+
+        try await CatalogUpdater(http: http, databaseURL: url).refresh { _ in }
+
+        let db = try CatalogDatabase(url: url)
+        let pride = try #require(try db.search(SearchQuery(text: "pride and prejudice")).first)
+        #expect(pride.defaultEdition.downloads == 0)
+        #expect(try db.search(SearchQuery(text: "frankenstein")).first?.editions.count == 2)
+        #expect(!db.isPartial)
+    }
+
+    @Test func subjectPageFailureIsSoft() async throws {
+        let url = try Self.tempDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let http = FakeHTTPClient(try Self.responses(
+            failing: [StandardEbooksParser.subjectURL("science-fiction", page: 1)]))
+
+        try await CatalogUpdater(http: http, databaseURL: url).refresh { _ in }
+
+        let db = try CatalogDatabase(url: url)
+        let work = try #require(try db.search(SearchQuery(text: "frankenstein")).first)
+        #expect(work.defaultEdition.id == "se:/ebooks/mary-shelley/frankenstein")
+        #expect(work.defaultEdition.subjects == [])
+        #expect(!db.isPartial)
+    }
+
+    @Test(arguments: [false, true])
+    func listingFailureWithoutIndexBuildsGutenbergOnlyIndex(emptyPage: Bool) async throws {
+        let url = try Self.tempDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let page1 = StandardEbooksParser.listingURL(1)
+        let http = FakeHTTPClient(try emptyPage
+            ? Self.responses(overrides: [page1: Self.emptyPage])
+            : Self.responses(failing: [page1]))
+        let now = Date()
+        let updater = CatalogUpdater(http: http, databaseURL: url, now: { now })
+        let log = PhaseLog()
+
+        try await updater.refresh(progress: log.record)
+
+        #expect(log.all.last == .done)
+        let db = try CatalogDatabase(url: url)
+        let work = try #require(try db.search(SearchQuery(text: "frankenstein")).first)
+        #expect(work.editions.map(\.id) == ["pg:84"])
+        #expect(db.isPartial)
+        #expect(updater.isStale(builtAt: db.builtAt, schemaVersion: db.storedSchemaVersion, isPartial: db.isPartial))
+        // No subject pages are fetched once the listing has failed.
+        #expect(await http.requests.allSatisfy { !$0.path.hasPrefix("/subjects") })
+    }
+
+    @Test func partialIndexIsReplacedByFullRefresh() async throws {
+        let url = try Self.tempDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let failing = FakeHTTPClient(try Self.responses(failing: [StandardEbooksParser.listingURL(1)]))
+        try await CatalogUpdater(http: failing, databaseURL: url).refresh { _ in }
+        #expect(try CatalogDatabase(url: url).isPartial)
+
+        try await CatalogUpdater(http: FakeHTTPClient(try Self.responses()), databaseURL: url).refresh { _ in }
+
+        let db = try CatalogDatabase(url: url)
+        #expect(!db.isPartial)
+        #expect(try db.search(SearchQuery(text: "frankenstein")).first?.editions.count == 2)
     }
 
     @Test func listingStopsWhenPageRepeats() async throws {
@@ -244,9 +316,17 @@ final class PhaseLog: Sendable {
         let updater = CatalogUpdater(
             http: FakeHTTPClient { _ in Data() }, databaseURL: URL(fileURLWithPath: "/dev/null"), now: { now })
         let fresh = now.addingTimeInterval(-3600)
-        #expect(!updater.isStale(builtAt: fresh, schemaVersion: CatalogDatabase.schemaVersion))
-        #expect(updater.isStale(builtAt: fresh, schemaVersion: CatalogDatabase.schemaVersion + 1))
-        #expect(updater.isStale(builtAt: fresh, schemaVersion: nil))
-        #expect(updater.isStale(builtAt: nil, schemaVersion: CatalogDatabase.schemaVersion))
+        let current = CatalogDatabase.schemaVersion
+        #expect(!updater.isStale(builtAt: fresh, schemaVersion: current, isPartial: false))
+        #expect(updater.isStale(builtAt: fresh, schemaVersion: current + 1, isPartial: false))
+        #expect(updater.isStale(builtAt: fresh, schemaVersion: nil, isPartial: false))
+        #expect(updater.isStale(builtAt: nil, schemaVersion: current, isPartial: false))
+    }
+
+    @Test func partialIndexIsAlwaysStale() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let updater = CatalogUpdater(
+            http: FakeHTTPClient { _ in Data() }, databaseURL: URL(fileURLWithPath: "/dev/null"), now: { now })
+        #expect(updater.isStale(builtAt: now, schemaVersion: CatalogDatabase.schemaVersion, isPartial: true))
     }
 }

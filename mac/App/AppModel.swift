@@ -113,7 +113,9 @@ enum AppModelError: LocalizedError {
     }
 
     private var isIndexStale: Bool {
-        updater.isStale(builtAt: database?.builtAt, schemaVersion: database?.storedSchemaVersion)
+        updater.isStale(
+            builtAt: database?.builtAt, schemaVersion: database?.storedSchemaVersion,
+            isPartial: database?.isPartial ?? false)
     }
 
     /// Rebuilds the index; on success swaps it in and re-runs the current search. A failure keeps
