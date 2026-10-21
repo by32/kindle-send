@@ -122,6 +122,7 @@ import Testing
 
         let reopened = try CatalogDatabase(url: url)
         #expect(reopened.builtAt != nil)
+        #expect(reopened.storedSchemaVersion == CatalogDatabase.schemaVersion)
         let hits = try reopened.search(SearchQuery(text: "raven", category: .popular, language: nil))
         #expect(hits.map(\.defaultEdition.title) == ["The Raven"])
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["catalog.sqlite"])
@@ -138,6 +139,7 @@ import Testing
         }
         #expect(throws: CatalogDatabaseError.closed) { try db.work(id: "raven|edgar poe") }
         #expect(db.builtAt == nil)
+        #expect(db.storedSchemaVersion == nil)
     }
 
     @Test func readOnlyOpenOfMissingFileThrows() {

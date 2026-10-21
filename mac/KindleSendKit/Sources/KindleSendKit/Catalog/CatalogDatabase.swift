@@ -115,13 +115,26 @@ public final class CatalogDatabase: @unchecked Sendable {
         }
     }
 
+    /// The layout `build` writes. Bump it whenever the schema or indexed content changes, so
+    /// `CatalogUpdater.isStale(builtAt:schemaVersion:)` rebuilds indexes from older builds.
+    public static let schemaVersion = 1
+
     public var builtAt: Date? {
+        meta("built_at").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+    }
+
+    /// The `schemaVersion` this file was built with; nil for files built before versioning.
+    public var storedSchemaVersion: Int? {
+        meta("schema_version").flatMap { Int($0) }
+    }
+
+    private func meta(_ key: String) -> String? {
         queue.sync {
-            guard let stmt = try? Statement(handle(), "SELECT value FROM meta WHERE key = 'built_at'"),
-                  (try? stmt.step()) == true,
-                  let seconds = Double(stmt.text(0))
+            guard let stmt = try? Statement(handle(), "SELECT value FROM meta WHERE key = ?1"),
+                  (try? stmt.bind(1, key)) != nil,
+                  (try? stmt.step()) == true
             else { return nil }
-            return Date(timeIntervalSince1970: seconds)
+            return stmt.text(0)
         }
     }
 
@@ -192,9 +205,14 @@ public final class CatalogDatabase: @unchecked Sendable {
                 try insertTri.run()
             }
 
-            let meta = try Statement(handle(), "INSERT OR REPLACE INTO meta(key, value) VALUES ('built_at', ?1)")
-            try meta.bind(1, String(Date().timeIntervalSince1970))
-            try meta.run()
+            let insertMeta = try Statement(handle(), "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)")
+            for (key, value) in [("built_at", String(Date().timeIntervalSince1970)),
+                                 ("schema_version", String(Self.schemaVersion))] {
+                try insertMeta.reset()
+                try insertMeta.bind(1, key)
+                try insertMeta.bind(2, value)
+                try insertMeta.run()
+            }
             try exec("COMMIT")
         } catch {
             try? exec("ROLLBACK")
