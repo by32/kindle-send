@@ -25,6 +25,13 @@ struct CLIConfigImporterTests {
         #expect(imported.password == "p\"w")
     }
 
+    @Test func customSMTPWithoutPortDefaultsTo587() throws {
+        let toml = "kindle_email = \"a@kindle.com\"\nprovider = \"smtp\"\n[smtp]\nhost = \"mail.example.com\"\nuser = \"you\"\n"
+        let imported = try #require(CLIConfigImporter.parse(toml: toml))
+        #expect(imported.settings.customPort == 587)
+        #expect(imported.settings.account?.port == 587)
+    }
+
     @Test func migratesLegacyFlatConfig() throws {
         let toml = "kindle_email = \"a@kindle.com\"\nsmtp_user = \"me@gmail.com\"\nsmtp_password = \"pw\"\nsmtp_port = 587\n"
         let imported = try #require(CLIConfigImporter.parse(toml: toml))

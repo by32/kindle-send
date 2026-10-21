@@ -40,7 +40,7 @@ struct SettingsView: View {
                     ForEach(Provider.allCases, id: \.self) { Text($0.displayName).tag($0) }
                 }
                 .onChange(of: model.settings.provider) { _, provider in
-                    if provider == .custom && model.settings.customPort == nil { model.settings.customPort = 587 }
+                    if provider == .custom && model.settings.customPort == nil { model.settings.customPort = AppSettings.defaultCustomPort }
                     test = .idle
                 }
                 if model.settings.provider == .custom {
@@ -134,7 +134,7 @@ struct SettingsView: View {
     }
 
     private var customPort: Binding<Int> {
-        Binding(get: { model.settings.customPort ?? 587 }, set: { model.settings.customPort = $0 })
+        Binding(get: { model.settings.customPort ?? AppSettings.defaultCustomPort }, set: { model.settings.customPort = $0 })
     }
 
     /// The fixed list, with the Mac's language added when it is not on it.

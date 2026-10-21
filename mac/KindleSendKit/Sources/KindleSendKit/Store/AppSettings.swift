@@ -2,6 +2,8 @@ import Foundation
 
 public struct AppSettings: Codable, Equatable, Sendable {
     static let defaultsKey = "settings.v1"
+    /// The custom server's port when none is set (STARTTLS), as in `kindle_send.py`.
+    public static let defaultCustomPort = 587
 
     public var kindleEmail: String
     public var provider: Provider
@@ -31,8 +33,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         if let preset = provider.preset {
             return SMTPAccount(host: preset.host, port: preset.port, user: user, from: sender, maxBytes: preset.maxBytes)
         }
-        guard let host = customHost, !host.isEmpty, let port = customPort else { return nil }
-        return SMTPAccount(host: host, port: port, user: user, from: sender, maxBytes: Provider.customMaxBytes)
+        guard let host = customHost, !host.isEmpty else { return nil }
+        return SMTPAccount(host: host, port: customPort ?? Self.defaultCustomPort, user: user, from: sender, maxBytes: Provider.customMaxBytes)
     }
 
     public var isValidKindleEmail: Bool {

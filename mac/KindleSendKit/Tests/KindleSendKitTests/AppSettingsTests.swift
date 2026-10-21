@@ -16,6 +16,13 @@ struct AppSettingsTests {
         #expect(AppSettings(provider: .custom, user: "u").account == nil)
     }
 
+    @Test func customAccountDefaultsPortTo587() {
+        let s = AppSettings(provider: .custom, user: "u", customHost: "mail.example.com", customPort: nil)
+        #expect(s.account == SMTPAccount(host: "mail.example.com", port: 587, user: "u", from: "u",
+                                         maxBytes: Provider.customMaxBytes))
+        #expect(AppSettings(provider: .custom, user: "u", customHost: "h", customPort: 465).account?.port == 465)
+    }
+
     @Test func roundTripsThroughUserDefaults() throws {
         let defaults = try #require(UserDefaults(suiteName: "AppSettingsTests-\(UUID().uuidString)"))
         let s = AppSettings(kindleEmail: "a@kindle.com", provider: .custom, user: "u", customHost: "h", customPort: 465, language: nil)

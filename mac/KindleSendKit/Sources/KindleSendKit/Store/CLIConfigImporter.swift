@@ -43,7 +43,7 @@ public enum CLIConfigImporter {
         settings.from = string(table["from"])
         if provider == .custom {
             settings.customHost = string(table["host"])
-            if case .int(let port)? = table["port"] { settings.customPort = port }
+            if case .int(let port)? = table["port"] { settings.customPort = port } else { settings.customPort = AppSettings.defaultCustomPort }
         }
         return Imported(settings: settings, password: string(table["password"]))
     }
