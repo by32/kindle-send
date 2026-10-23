@@ -1,0 +1,38 @@
+name: KindleSend
+options:
+  bundleIdPrefix: com.by32
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  KindleSendKit:
+    path: KindleSendKit
+targets:
+  KindleSend:
+    type: application
+    platform: macOS
+    sources:
+      - App
+      - Views
+    dependencies:
+      - package: KindleSendKit
+        product: KindleSendKit
+    entitlements:
+      path: KindleSend.entitlements
+      properties:
+        # Off for v1: the CLI import reads ~/.config/kindle-send/config.toml. Revisit for distribution.
+        com.apple.security.app-sandbox: false
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.by32.KindleSend
+        PRODUCT_NAME: KindleSend
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Kindle Send
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.reference
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"

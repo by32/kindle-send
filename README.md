@@ -4,6 +4,11 @@ Send free, open-format ebooks (Project Gutenberg, Standard Ebooks, any EPUB/PDF 
 to your Kindle in one command, using Amazon's Send-to-Kindle email service.
 Needs only Python 3.9+, with no extra packages. The `python3` that ships with macOS works.
 
+## Mac app
+
+Prefer a GUI? A native SwiftUI Mac app in [`mac/`](mac/README.md) searches Project Gutenberg and
+Standard Ebooks, shows a cover grid, and emails the books you queue to your Kindle.
+
 ## Setup
 
 1. **Find your Kindle address**: amazon.com → *Manage Your Content and Devices* → *Preferences* →

@@ -1,0 +1,27 @@
+kindle_email = "yourname_abc123@kindle.com"
+provider = "icloud"            # the default; override per run with --via
+
+[icloud]
+user = "you@icloud.com"
+password = "abcd-efgh-ijkl-mnop"
+
+[gmail]
+user = "you@gmail.com"
+password = "abcd efgh ijkl mnop"
+from = "alias@gmail.com"       # optional; defaults to user
+
+[smtp]
+host = "mail.example.com"
+port = 587
+user = "you"
+password = "..."
+
+[ses]
+from = "books@yourdomain.com"
+region = "us-east-1"
+access_key_id = "AKIA..."      # optional if set in env or ~/.aws/credentials
+secret_access_key = "..."
+
+[resend]
+from = "books@yourdomain.com"
+api_key = "re_..."             # or RESEND_API_KEY
